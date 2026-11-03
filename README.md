@@ -42,6 +42,28 @@ uv run --frozen prompt-ledger --root . serve
 
 ### 次回からは start.bat
 
+初回は **setup.bat をダブルクリック**する方法も利用できます。
+Python 3.10～3.13を事前に公式サイトから導入してください。
+スクリプトの配置場所を基準に専用 `.venv` を作成し、固定版uv 0.11.7を
+`.cache/setup-tools` に、`uv.lock`の基本依存を `.venv` に導入します。
+公式PyPIへの通信が発生します。既存環境の不要パッケージやデータは削除しません。
+再実行可能で、既存 `.venv` が不完全/非対応なら自動削除せずエラーで停止します。
+基本セットアップだけで画面と解析のみを利用できます。
+
+Qwenも取得する場合だけ、PowerShellから次を明示実行します。
+重みは約1.2GB、CPU依存を含め数GBの通信と空き容量が必要です。
+公式PyPI・PyTorch CPU配布元・Hugging Faceに接続します。
+
+```powershell
+.\setup.bat --model-revision REPLACE_WITH_OFFICIAL_40_CHARACTER_COMMIT_SHA
+```
+
+既存モデルを上書きしません。途中取得でモデルフォルダが空でなくなった場合は、
+内容を確認して保全したうえで、新しい展開先から取得し直してください。
+証明書エラーでのSSL無効化・迂回は行いません。
+`setup.bat --check` はPython/パス確認だけで通信・環境作成なし。
+終了コードは0=成功、2=Python/入力/環境不備、1=導入失敗、130=中断です。
+
 初回の `uv sync --frozen` 後は、展開フォルダの **start.bat をダブルクリック**すると
 そのフォルダの `.venv` で起動します。作業ディレクトリや `LEDGER_ROOT` に依存しません。
 表示された `http://127.0.0.1:8765` をブラウザで開いてください。
