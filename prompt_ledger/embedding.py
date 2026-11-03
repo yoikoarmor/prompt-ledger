@@ -97,6 +97,7 @@ class QwenEmbedder:
             "dtype": "float32",
             "device": self.select_device(),
             "runtime_versions": runtime_versions(),
+            **({"batching": "pair-max2-padded4096-v1"} if self.select_device() == "cuda" else {}),
             "artifact_hash": hashlib.sha256(
                 json.dumps(value.get("sha256", {}), sort_keys=True).encode()
             ).hexdigest(),
@@ -115,7 +116,21 @@ class QwenEmbedder:
                 ) from None
             raise
 
+    def encode_pair(self, positive, negative):
+        texts = [positive, negative] if negative else [positive]
+        if self.select_device() != "cuda":
+            return [self.encode(text) for text in texts]
+        try:
+            return self._encode_many(texts)
+        except RuntimeError as exc:
+            self.model = None
+            code = "cuda_oom" if "out of memory" in str(exc).lower() else "cuda_runtime"
+            raise LedgerError(code, "CUDA pair inference failed; no model-space fallback occurred.") from None
+
     def _encode(self, text):
+        return self._encode_many([text])[0]
+
+    def _encode_many(self, texts):
         with self.lock:
             if self.model is None:
                 identity = self.identity
@@ -153,15 +168,24 @@ class QwenEmbedder:
                     self.model = None
                     raise LedgerError("model_mismatch", "Expected a full 1024-dimensional Qwen model.")
                 self.loaded_identity = identity
-            token_ids = self.model.tokenizer(text, add_special_tokens=True, truncation=False)["input_ids"]
-            if len(token_ids) > MAX_TOKENS:
+            lengths = [
+                len(self.model.tokenizer(text, add_special_tokens=True, truncation=False)["input_ids"])
+                for text in texts
+            ]
+            if any(length > MAX_TOKENS for length in lengths):
                 raise LedgerError(
                     "token_limit", "Prompt exceeds 32768 tokens including special tokens; not truncated."
                 )
-            vector = self.model.encode(
-                [text], prompt="", normalize_embeddings=False, show_progress_bar=False, convert_to_numpy=True
-            )[0]
-            return normalize(vector.tolist(), 1024)
+            batch = min(2, len(texts)) if self.device == "cuda" and max(lengths) * len(texts) <= 4096 else 1
+            vectors = self.model.encode(
+                texts,
+                batch_size=batch,
+                prompt="",
+                normalize_embeddings=False,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            )
+            return [normalize(vector.tolist(), 1024) for vector in vectors]
 
 
 def setup_model(cfg, revision):

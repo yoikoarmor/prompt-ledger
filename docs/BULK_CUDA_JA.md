@@ -68,7 +68,7 @@ CLI指定は保存しません。UIとstatusのexecutionに要求/選択デバ�
 cuda指定で利用不能ならcuda_unavailable。autoは利用不能の場合だけCPUを選びます。
 VRAM不足はcuda_oom、他のCUDA実行障害はcuda_runtimeで停止し、途中でCPUへ黙って切り替えません。
 既存の別モデルをアンロードしたり、他プロセスのGPUを制御したりしません。
-float32・batch1・オフラインを維持します。デバイス/実行環境が変わると既存vector空間との混在を
+float32・CPU batch1 / CUDA最大batch2・オフラインを維持します。デバイス/実行環境が変わると既存vector空間との混在を
 拒否するため、新しいledger rootで再取り込みしてください。
 今回のCUDA検証はstubのみで、実GPUの性能・VRAM量・ドライバ互換性は未検証です。
 

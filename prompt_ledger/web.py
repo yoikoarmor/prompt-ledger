@@ -16,6 +16,7 @@ from .config import MAX_BATCH_BYTES, Config, LedgerError
 from .core import Ledger
 from .parsers import extract
 from .streaming import MetadataStream
+from .text_export import metadata_record
 
 
 class ClosingStreamingResponse(StreamingResponse):
@@ -229,13 +230,28 @@ def create_app(cfg=None, ledger=None, port=8765):
         return {"schema_version": 1, "rolled_back": complete, "cancellation_requested": True}
 
     @app.post("/api/file", summary="Stream one file without a file-size cap; no disk image copy")
-    async def stream_file(request: Request, name: str, check_only: bool = False, batch_id: str | None = None):
+    async def stream_file(
+        request: Request,
+        name: str,
+        check_only: bool = False,
+        batch_id: str | None = None,
+        extract_only: bool = False,
+    ):
+        if extract_only and (batch_id or check_only):
+            raise LedgerError("usage", "Extraction is separate from check-only or dry-run.")
         stream = MetadataStream(name)
         async for chunk in request.stream():
             if batch_id and batch_id in dry_batches:
                 dry_batches[batch_id].last_activity = time.monotonic()
             stream.feed(chunk)
         raw = stream.finish()
+        if extract_only:
+            rules = ledger.rules(privacy=False)
+            return {
+                "schema_version": 1,
+                "record": metadata_record(name, raw, rules["terms"]),
+                "rule_version": rules["version"],
+            }
         if check_only:
             try:
                 extract(name, raw)

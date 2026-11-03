@@ -6,8 +6,9 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
+from .comparison import nearest as find_nearest
 from .config import LedgerError, contained, relative_path
-from .embedding import QwenEmbedder, cosine, normalize
+from .embedding import QwenEmbedder, normalize
 from .exclusions import matches, validate_terms
 from .parsers import extract, pair
 
@@ -20,6 +21,7 @@ class Ledger:
     def __init__(self, cfg, embedder=None):
         self.cfg = cfg
         self.embedder = embedder or QwenEmbedder(cfg)
+        self.comparison_state = {"backend": "not_run", "fallback_reason": None}
         cfg.path("data_dir").mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript("""
@@ -183,8 +185,13 @@ class Ledger:
         elif parsed:
             dim = self.embedder.identity["dimension"]
             try:
-                pv = normalize(self.embedder.encode(parsed.positive), dim)
-                nv = normalize(self.embedder.encode(parsed.negative), dim) if parsed.negative else None
+                if hasattr(self.embedder, "encode_pair"):
+                    vectors = self.embedder.encode_pair(parsed.positive, parsed.negative)
+                    pv = normalize(vectors[0], dim)
+                    nv = normalize(vectors[1], dim) if parsed.negative else None
+                else:
+                    pv = normalize(self.embedder.encode(parsed.positive), dim)
+                    nv = normalize(self.embedder.encode(parsed.negative), dim) if parsed.negative else None
             except LedgerError as exc:
                 if exc.code != "token_limit":
                     raise
@@ -194,21 +201,14 @@ class Ledger:
                 # Both vectors are validated. Pin in the same transaction that saves them.
                 self._bind_space(conn, pin=True)
                 status, reason = "accepted", "new_pair"
-                best = -2.0
-                for candidate in conn.execute("SELECT * FROM records WHERE status='accepted' ORDER BY id"):
-                    if matches(candidate["positive"], candidate["negative"], terms):
-                        continue
-                    positive_score = cosine(pv, json.loads(candidate["positive_vector"]))
-                    if not parsed.negative and not candidate["negative"]:
-                        negative_score = 1.0
-                    elif not parsed.negative or not candidate["negative"]:
-                        negative_score = 0.0
-                    else:
-                        negative_score = cosine(nv, json.loads(candidate["negative_vector"]))
-                    # Maximize the limiting score of this conjunctive rule.
-                    score = min(positive_score, negative_score)
-                    if score > best:
-                        best, nearest, ps, ns = score, candidate["id"], positive_score, negative_score
+                nearest, ps, ns = find_nearest(
+                    conn,
+                    pv,
+                    nv,
+                    terms,
+                    device=getattr(self.embedder, "device", "cpu"),
+                    diagnostics=self.comparison_state,
+                )
                 if nearest is not None and ps >= self.cfg.threshold and ns >= self.cfg.threshold:
                     status, reason = "duplicate", "both_cosines_at_or_above_threshold"
         cur = conn.execute(
@@ -337,6 +337,7 @@ class Ledger:
             "model_error": model_error,
             "threshold": self.cfg.threshold,
             "space": json.loads(space[0]) if space else None,
+            "comparison": dict(self.comparison_state),
             "execution": self.embedder.execution() if hasattr(self.embedder, "execution") else None,
         }
 

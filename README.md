@@ -1,5 +1,21 @@
 # Prompt Ledger
 
+画像metadataを**比較して重複を除いたJSON**へまとめる場合は、フォルダを選択し
+**「比較して取り込む」→「採用JSONを保存」**を使います。「試しに判定する」はOFFにします。
+既存acceptedと同バッチの先行acceptedに対し、positive AND negativeが設定閾値（初期0.95）以上なら重複です。
+重複・除外文字列一致・要確認はaccepted.jsonに入りません。現在の除外ルールを満たす既存acceptedも出力します。
+JSONファイルを入力した場合もPNG/JPEG metadataと同じ判定です。JSON配列の履歴一括importとは異なり、
+対応するpositive/negativeペア形式を1ファイル1件として読みます。
+
+```powershell
+.venv\Scripts\python -m prompt_ledger.cli --root . import selected-folder --recursive
+.venv\Scripts\python -m prompt_ledger.cli --root . export --output accepted.json
+```
+
+比較しない抽出も、UI「テキストをJSONに抽出（比較なし）」とCLI `extract`で選べます。
+こちらはembedding不要で重複を残す別モードです。入力はinput_dir配下、出力はoutput_dir配下です。
+詳細は [抽出と比較の検証](docs/EXTRACTION_COMPARISON_JA.md)。
+
 フォルダ入力・大量ファイルの逐次処理・中止操作・CUDA選択に対応しています。
 詳しい手順と制約は [大量入力とCUDA](docs/BULK_CUDA_JA.md) を参照してください。
 

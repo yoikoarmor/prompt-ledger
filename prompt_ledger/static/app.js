@@ -60,6 +60,7 @@ function setBusy(value) {
   busy = value;
   $("import").disabled = value || !selected.length;
   $("check").disabled = value || !selected.length;
+  $("extract").disabled = value || !selected.length;
   $("files").disabled = value;
   $("folder").disabled = value;
   $("cancel").disabled = !value;
@@ -208,6 +209,9 @@ async function refresh(append = false) {
   $("duplicate-count").textContent = status.counts.duplicate;
   $("review-count").textContent = status.pending_review;
   $("threshold").textContent = status.threshold.toFixed(2);
+  if (status.comparison) {
+    $("comparison-mode").textContent = `比較: ${status.comparison.backend}${status.comparison.fallback_reason ? " (CPU fallback)" : ""}`;
+  }
   if (status.execution) {
     $("device-mode").textContent = `${status.execution.requested} → ${status.execution.selected || "未選択"} (${status.execution.loaded ? "ロード済み" : "未ロード"})`;
   }
@@ -415,3 +419,60 @@ $("review-form").onsubmit = async (event) => {
     notify(`接続を確認してください: ${err.message}`, true);
   }
 })();
+
+$("extract").onclick = async () => {
+  let writable = null;
+  const parts = [];
+  setBusy(true);
+  importController = new AbortController();
+  const signal = importController.signal;
+  const checkCancelled = () => signal.throwIfAborted();
+  try {
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({suggestedName: "metadata.json"});
+      checkCancelled();
+      writable = await handle.createWritable();
+      checkCancelled();
+    }
+    const write = async text => {
+      checkCancelled();
+      if (writable) await writable.write(text);
+      else parts.push(text);
+      checkCancelled();
+    };
+    let version = null, separator = "", count = 0;
+    for (const file of selected) {
+      checkCancelled();
+      const params = new URLSearchParams({name: file.webkitRelativePath || file.name, extract_only: "true"});
+      const data = await api(`/api/file?${params}`, {method: "POST", body: file,
+        headers: {"Content-Type": "application/octet-stream"}, signal}).then(r => r.json());
+      checkCancelled();
+      if (version === null) {
+        version = data.rule_version;
+        await write(JSON.stringify({schema_version: 1, kind: "metadata-extraction", rule_version: version}).slice(0,-1) + ',"records":[');
+      }
+      if (version !== data.rule_version) throw new Error("Exclusion rules changed; restart extraction.");
+      await write(separator + JSON.stringify(data.record));
+      separator = ",";
+      count++;
+      $("selection-label").textContent = `${count} / ${selected.length}`;
+    }
+    await write("]}\n");
+    checkCancelled();
+    // Once OS commit begins it cannot be promised reversible. No new cancel is accepted here.
+    $("cancel").disabled = true;
+    if (writable) await writable.close();
+    else {
+      checkCancelled();
+      const url = URL.createObjectURL(new Blob(parts, {type: "application/json"}));
+      const link = document.createElement("a"); link.href = url; link.download = "metadata.json"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    notify(`${count} files: metadata JSON exported without embeddings.`);
+  } catch (error) {
+    if (writable) await writable.abort().catch(() => {});
+    notify(error.name === "AbortError" ? "Extraction cancelled." : error.message, true);
+  } finally {
+    importController = null; setBusy(false);
+  }
+};

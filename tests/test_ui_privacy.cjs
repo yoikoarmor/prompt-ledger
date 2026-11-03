@@ -44,7 +44,8 @@ async function harness(options = {}) {
   let deferred = false;
   const pending = [];
   const pendingRules = [];
-  const uploads = [], endings = [];
+  const uploads = [], endings = [], writes = [];
+  const sink = {closed: false, aborted: false};
   const status = {
     counts: { accepted: 1, duplicate: 0 },
     pending_review: 0,
@@ -53,6 +54,7 @@ async function harness(options = {}) {
   };
   const response = (value) => ({ ok: true, json: async () => value });
   const context = {
+    window: {showSaveFilePicker: async () => ({createWritable: async () => ({write: async text => {writes.push(text); if (options.onWrite) await options.onWrite(text,element);}, close: async () => {sink.closed=true;}, abort: async () => {sink.aborted=true;}})})},
     document: {
       getElementById: element,
       createElement: () => new Element(),
@@ -67,6 +69,7 @@ async function harness(options = {}) {
       if (url.startsWith("/api/file?")) {
         uploads.push({url, body: args.body});
         if (options.cancelAfter === uploads.length) element("cancel").onclick();
+        if (url.includes("extract_only=true")) return response({rule_version: 0, record: {source: "synthetic.json", status: "extracted", positive: "synthetic private text", negative: ""}});
         return response({results: [{id: uploads.length, status: "accepted"}]});
       }
       if (url.startsWith("/api/rules")) {
@@ -105,7 +108,7 @@ async function harness(options = {}) {
   );
   await new Promise(setImmediate);
   deferred = !options.bulk;
-  return { element, pending, pendingRules, uploads, endings, ui: context.testUI };
+  return { element, pending, pendingRules, uploads, endings, writes, sink, ui: context.testUI };
 }
 
 test("folder queue streams large files without arrayBuffer and has no 20-file cap", async () => {
@@ -210,3 +213,34 @@ test("hidden mode gates filenames even if stale rich data is rendered directly",
     /synthetic private|synthetic-private/,
   );
 });
+
+
+test("explicit extraction streams text JSON without putting body into records", async () => {
+  const {element, uploads, writes, ui} = await harness({bulk: true});
+  ui.selectFiles([{name: "synthetic.json", size: 10}]);
+  await element("extract").onclick();
+  const result = JSON.parse(writes.join(""));
+  assert.equal(result.kind, "metadata-extraction");
+  assert.equal(result.records[0].positive, "synthetic private text");
+  assert.equal(uploads.length, 1);
+  assert.equal(ui.getRecords().length, 0);
+  assert.ok(!element("result-list").textContent.includes("synthetic private text"));
+});
+
+
+for (const phase of ["record", "final-json"]) {
+  test(`extraction cancellation during ${phase} write aborts without closing`, async () => {
+    const {element, sink, ui} = await harness({bulk: true, onWrite: async (text, get) => {
+      if ((phase === "record" && text.includes("synthetic private text")) || (phase === "final-json" && text === "]}\n")) {
+        get("cancel").onclick();
+        await new Promise(setImmediate);
+      }
+    }});
+    ui.selectFiles([{name: "synthetic.json", size: 10}]);
+    await element("extract").onclick();
+    assert.equal(sink.closed,false);
+    assert.equal(sink.aborted,true);
+    assert.match(element("message").textContent,/cancelled/);
+    assert.ok(!element("message").textContent.includes("exported"));
+  });
+}

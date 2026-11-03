@@ -41,3 +41,30 @@ def test_explicit_cuda_unavailable_and_oom(cfg, monkeypatch):
     with pytest.raises(LedgerError) as error:
         embedder.encode("synthetic")
     assert error.value.code == "cuda_oom" and embedder.device == "cuda"
+
+
+def test_pair_gpu_batch_budget_and_token_limit_without_gpu(cfg):
+    np = pytest.importorskip("numpy")
+
+    class Model:
+        def __init__(self):
+            self.batches = []
+
+        def tokenizer(self, text, **kwargs):
+            return {"input_ids": [0] * len(text)}
+
+        def encode(self, texts, **kwargs):
+            self.batches.append(kwargs["batch_size"])
+            return np.asarray([[1.0] + [0.0] * 1023 for _ in texts])
+
+    embedder = QwenEmbedder(replace(cfg, device="cuda"))
+    embedder.device = "cuda"
+    embedder.model = Model()
+    assert len(embedder.encode_pair("a", "b")) == 2
+    assert embedder.model.batches == [2]
+    embedder.encode_pair("a" * 3000, "b")
+    assert embedder.model.batches[-1] == 1
+    with pytest.raises(LedgerError) as exc:
+        embedder.encode_pair("a" * 32769, "b")
+    assert exc.value.code == "token_limit"
+    assert len(embedder.model.batches) == 2

@@ -1,3 +1,42 @@
+# Compared JSON / extraction cancellation follow-up
+
+161 Python tests passed, 1 skipped; Node UI 8 passed; Ruff and JS syntax passed.
+New CLI/API flow tests start with existing accepted data and import synthetic PNG
+and JSON pairs. They verify both cosines exactly .95 rejects, changed negative
+accepts, repeated input reuses a row, missing metadata reviews, blocked text is
+excluded, and accepted-only JSON includes existing records under current rules.
+Extraction remains a separate optional no-comparison mode; normal documentation/UI
+now prioritize compared import followed by accepted JSON export.
+Fixed independent-review P2: extraction captures a stable AbortSignal and checks it
+before/after writes and before final commit. Cancel during the last record write or
+JSON tail write aborts the writable and does not close/save or report success.
+Once OS close begins, cancellation is disabled; reversal of OS commit is not promised.
+No real images/prompts or GPU were used in these regressions. No commit/push.
+
+# Bounded comparison / CUDA batching follow-up
+
+159 synthetic Python tests passed, 1 skipped; Node UI 6 passed; Ruff and JS syntax passed.
+128-row blocks and per-query 64-entry decoded-vector cache avoid all-N-by-N storage.
+Tests cover exact 0.95, ID ties across blocks, empty negatives, excluded rows, corrupt
+vectors, memory budget with 1500 synthetic rows, no-NumPy fallback, GPU score/failure
+stubs, rounding near threshold, cancellation rollback and pair token/batch budgets.
+CUDA pair embedding is capped at two texts / 4096 padded tokens, otherwise batch1;
+CUDA batching identity prevents mixing previous CUDA-space vectors. CPU space unchanged.
+New GPU inference/comparison paths have not been measured on hardware: GPU remained
+busy (35-45% utilization, about 6-7 GiB) so no GPU test was started. Prior single-text
+CUDA smoke does not verify this revision. No speed or VRAM claims for GPU are made.
+Selected-folder CPU timing and private derived vector caches remain in ignored .cache.
+No real prompt text, image bytes, DB or vectors are included in tracked source/artifacts.
+
+# Metadata extraction follow-up
+
+138 synthetic Python tests passed, 1 skipped; 6 Node UI tests passed; Ruff and JS
+syntax passed. Tests cover embedding-free CLI/API, authorization, repeated pairs,
+exclusion privacy, malformed metadata, atomic interruption cleanup and UI direct-save
+without copying returned prompt text into the records display. Current comparison
+algorithm is unchanged. Source is held for independent review; no commit/push.
+Selected-folder validation reports remain isolated in ignored .cache, never source.
+
 # CUDA setup path verification
 
 Existing setup.bat forwards --cuda and selects the exclusive cuda extra. No missing

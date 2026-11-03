@@ -13,7 +13,7 @@
         ><span class="mark" aria-hidden="true">P<span>·</span></span
         >Prompt Ledger</a
       ><span class="local"
-        ><i></i> LOCAL ONLY <span class="cpu" id="device-mode">/ CPU</span></span
+        ><i></i> LOCAL ONLY <span class="cpu" id="device-mode">/ CPU</span> <span id="comparison-mode">比較: 未実行</span></span
       >
     </header>
     <main>
@@ -101,7 +101,10 @@
             ><input id="dry-run" type="checkbox" />試しに判定する
             <span>保存しません</span></label
           >
-          <div class="import-actions">
+          <button class="secondary" id="extract" disabled>テキストをJSONに抽出（比較なし）</button>
+            <p class="muted">抽出はembedding不要。重複も残し、除外ルールは適用します。JSONには本文が含まれます。</p>
+            <p class="muted">比較して取り込んだ後、「採用JSONを保存」で既存を含む採用分だけ出力します。重複・除外・要確認は含みません。試行中は保存されません。</p>
+            <div class="import-actions">
             <button class="primary" id="import" disabled>
               比較して取り込む <span aria-hidden="true">→</span></button
             ><button class="secondary" id="check" disabled>

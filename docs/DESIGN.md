@@ -119,3 +119,9 @@ No image similarity, generation, automatic folder watch, hidden history ingestio
 ANN search, model-space migration, joint embedding mode, archive importer, or cloud
 hosting. No automatic threshold tuning. Qwen semantic quality must be evaluated
 on a user-approved sample locally before relying on the dedup decisions.
+
+
+Explicit metadata extraction bypasses embeddings and deduplication. Shared text_export.metadata_record applies exclusions before returning text. CLI uses one rules snapshot and atomic streamed output; UI uses raw per-file API with rule-version consistency checks. Extraction does not insert records or vectors. See EXTRACTION_COMPARISON_JA.md.
+
+
+Nearest comparison is implemented in comparison.py: 128-row bounded blocks, CPU NumPy or explicit CUDA float64 matrix-vector products, exact fsum reranking within a conservative rounding margin. CUDA comparison failure uses the same vectors on CPU and reports fallback; embedding CUDA errors do not change model space. CUDA pair embedding batches up to two texts within a 4096 padded-token budget, with a pinned CUDA batching identity. See EXTRACTION_COMPARISON_JA.md.

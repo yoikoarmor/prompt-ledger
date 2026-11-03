@@ -9,6 +9,7 @@ from .core import Ledger
 from .embedding import setup_model
 from .inputs import read_inputs
 from .parsers import extract
+from .text_export import export_text
 
 
 class Parser(argparse.ArgumentParser):
@@ -39,6 +40,10 @@ def parser():
     )
     load.add_argument("--dry-run", action="store_true")
     load.add_argument("--check-only", action="store_true", help="Parse only; no model or database writes")
+    text = sub.add_parser("extract", help="Export metadata text without embeddings; duplicates retained")
+    text.add_argument("paths", nargs="+")
+    text.add_argument("--recursive", action="store_true")
+    text.add_argument("--output", default="metadata.json")
     export = sub.add_parser("export")
     export.add_argument("--output", default="accepted.json", help="Relative to output_dir")
     model = sub.add_parser("setup-model")
@@ -75,6 +80,8 @@ def execute(args):
                 "results_truncated": processed > len(results),
             }
         return Ledger(cfg).ingest(files, args.dry_run)
+    if args.command == "extract":
+        return export_text(Ledger(cfg), read_inputs(cfg, args.paths, args.recursive), args.output)
     if args.command == "setup-model":
         return {"schema_version": 1, "model": setup_model(cfg, args.revision)}
     if args.command == "serve":
