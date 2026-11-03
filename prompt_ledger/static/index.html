@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Prompt Ledger · ローカルのプロンプト整理</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/"
+        ><span class="mark" aria-hidden="true">P<span>·</span></span
+        >Prompt Ledger</a
+      ><span class="local"
+        ><i></i> LOCAL ONLY <span class="cpu">/ CPU</span></span
+      >
+    </header>
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">YOUR PROMPTS, WITHOUT THE REPETITION</p>
+          <h1>新しい発想を、<br class="mobile" />コレクションへ。</h1>
+          <p class="lede">
+            画像のメタデータからプロンプトを取り出し、<br />似た組み合わせを整理します。画像のプレビューは行いません。
+          </p>
+        </div>
+        <div class="rule">
+          <span class="rule-label">重複判定のしきい値</span
+          ><strong id="threshold">0.95</strong
+          ><span>POSITIVE <b>AND</b> NEGATIVE</span
+          ><small
+            >両方のコサイン類似度がしきい値以上なら重複。<br />この値は確率や正解率ではありません。</small
+          >
+        </div>
+      </section>
+      <div class="model-notice" id="model-notice" hidden>
+        <span class="notice-icon">i</span>
+        <div>
+          <strong>Qwen モデルのセットアップが必要です</strong>
+          <p>
+            まず README の setup-model
+            手順を実行してください。メタデータの確認はモデルなしでも使えます。
+          </p>
+        </div>
+      </div>
+      <section class="stats" aria-label="コレクションの状況">
+        <div>
+          <span>採用済み</span><strong id="accepted-count">0</strong
+          ><small>JSON に含まれるペア</small>
+        </div>
+        <div>
+          <span>重複</span><strong id="duplicate-count">0</strong
+          ><small>記録は保持・JSON から除外</small>
+        </div>
+        <div>
+          <span>要確認</span><strong id="review-count">0</strong
+          ><small>未解決のメタデータ</small>
+        </div>
+        <div class="model-stat">
+          <span>EMBEDDING MODEL</span
+          ><strong id="model-name">Qwen3 <small>0.6B</small></strong
+          ><small id="model-detail">1024 dimensions · ローカル処理</small>
+        </div>
+      </section>
+      <div class="workspace">
+        <section class="panel import-panel">
+          <div class="section-title">
+            <span class="step">01</span>
+            <h2>ファイルを選ぶ</h2>
+          </div>
+          <p class="muted">選択したファイルだけを処理します。</p>
+          <label class="dropzone" id="dropzone" for="files"
+            ><span class="upload-icon" aria-hidden="true">↥</span
+            ><strong>ここへファイルをドロップ</strong
+            ><span>またはクリックして選択</span
+            ><small>PNG / JPEG / JSON · 最大20件 / 合計20 MiB</small
+            ><input
+              id="files"
+              type="file"
+              accept=".png,.jpg,.jpeg,.json"
+              multiple
+          /></label>
+          <div class="selection">
+            <span id="selection-label">ファイル未選択</span
+            ><button class="text-button" id="clear" type="button">
+              クリア
+            </button>
+          </div>
+          <ul
+            id="file-list"
+            class="file-list"
+            aria-label="選択されたファイル"
+          ></ul>
+          <label class="checkbox"
+            ><input id="dry-run" type="checkbox" />試しに判定する
+            <span>保存しません</span></label
+          >
+          <div class="import-actions">
+            <button class="primary" id="import" disabled>
+              比較して取り込む <span aria-hidden="true">→</span></button
+            ><button class="secondary" id="check" disabled>
+              メタデータのみ確認
+            </button>
+          </div>
+          <p class="privacy-note">
+            元画像の変更・削除・保存は行いません。<br />外部 API
+            への送信や過去フォルダの自動走査もありません。
+          </p>
+          <hr />
+          <h2>除外する文字列</h2>
+          <p class="muted">
+            Positive / Negative
+            のどちらかに部分一致すると除外。大小文字を区別しません（Unicode
+            casefold）。正規表現ではありません。既存の採用データも現在のルールで書き出し時に除外します。
+          </p>
+          <p class="muted" id="rules-summary">登録数を確認中</p>
+          <p class="muted" id="rules-private">
+            編集・一致文字列の確認は「本文を表示」をONにしてください。
+          </p>
+          <form id="rules-form" hidden>
+            <label for="rules-terms">1行に1つ（最大100件）</label>
+            <textarea id="rules-terms" rows="4" maxlength="25700"></textarea>
+            <button class="secondary" type="submit" id="rules-save">
+              除外ルールを保存
+            </button>
+            <button class="text-button" type="button" id="rules-reload">
+              保存済みを再読込
+            </button>
+          </form>
+        </section>
+        <section class="panel results-panel">
+          <div class="section-title">
+            <span class="step">02</span>
+            <h2>判定を確認する</h2>
+            <button class="secondary compact" id="export">
+              採用 JSON を保存 ↓
+            </button>
+          </div>
+          <div class="toolbar">
+            <div class="tabs" role="tablist" aria-label="記録フィルター">
+              <button
+                class="tab active"
+                role="tab"
+                aria-selected="true"
+                data-filter="all"
+              >
+                すべて</button
+              ><button
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                data-filter="accepted"
+              >
+                採用</button
+              ><button
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                data-filter="duplicate"
+              >
+                重複</button
+              ><button
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                data-filter="review"
+              >
+                要確認
+              </button>
+              <button
+                class="tab"
+                role="tab"
+                aria-selected="false"
+                data-filter="excluded"
+              >
+                除外
+              </button>
+            </div>
+            <label class="privacy-toggle"
+              ><input type="checkbox" id="show-text" />本文を表示</label
+            >
+          </div>
+          <p class="result-description" id="result-description">
+            直近100件を表示。初期状態では本文・ファイル名を非表示にします。
+          </p>
+          <div id="result-list">
+            <div class="empty">
+              <span aria-hidden="true">≋</span>
+              <h3>コレクションはここから。</h3>
+              <p>ファイルを選んで、最初のプロンプトを取り込みましょう。</p>
+            </div>
+          </div>
+          <button class="text-button" id="more" hidden>
+            さらに100件を表示
+          </button>
+        </section>
+      </div>
+      <section class="how">
+        <div>
+          <span>01 / EXTRACT</span>
+          <h3>メタデータだけ読む</h3>
+          <p>
+            A1111 / Forge、対応する ComfyUI グラフ、EXIF UserComment、明示的な
+            JSON。
+          </p>
+        </div>
+        <div>
+          <span>02 / COMPARE</span>
+          <h3>2つの意味を比較する</h3>
+          <p>
+            Positive と Negative を別々に比較。Negative
+            が両方空なら1、片方だけ空なら0です。
+          </p>
+        </div>
+        <div>
+          <span>03 / KEEP</span>
+          <h3>採用したペアを書き出す</h3>
+          <p>
+            重複と要確認は別記録として保持。あいまいなグラフは推測せず、確認を待ちます。
+          </p>
+        </div>
+      </section>
+      <footer>
+        <span>Prompt Ledger <b>v0.1</b></span
+        ><span>プライベートな収集に、説明できる判定を。</span
+        ><a href="/openapi.json">OpenAPI schema ↗</a>
+      </footer>
+    </main>
+    <div
+      class="toast"
+      id="message"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
+    <dialog id="review-dialog">
+      <form id="review-form">
+        <div class="section-title">
+          <h2>プロンプトを確認・補正</h2>
+          <button type="button" class="text-button" id="close-review">
+            閉じる ×
+          </button>
+        </div>
+        <p class="muted">
+          入力したペアを同じ基準で再判定します。元の要確認記録は保持します。
+        </p>
+        <label
+          >Positive<textarea
+            id="review-positive"
+            required
+            rows="5"
+          ></textarea></label
+        ><label
+          >Negative<textarea id="review-negative" rows="3"></textarea></label
+        ><button class="primary" type="submit">補正して再判定</button>
+      </form>
+    </dialog>
+  </body>
+</html>

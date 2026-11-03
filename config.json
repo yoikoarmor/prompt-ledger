@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "threshold": 0.95,
+  "data_dir": "data",
+  "model_dir": "models/qwen3-embedding-0.6b",
+  "input_dir": "input",
+  "output_dir": "outputs"
+}
