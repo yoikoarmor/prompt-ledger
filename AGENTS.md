@@ -13,8 +13,10 @@ model weights, or unrelated datasets. Work on synthetic fixtures during developm
 - Use `import ... --dry-run` before writing when appropriate. Dry-run IDs are provisional.
 - CLI JSON stdout is the machine interface. Check schema_version and exit code.
 - `records` is privacy-preserving by default. Do not opt into text or export unless needed and authorized.
-- Qwen inference stays CPU, float32, offline, local_files_only=True, trust_remote_code=False.
-- Do not modify other virtual environments, unload existing models, use GPUs, or add paid APIs.
+- Qwen defaults to CPU; users may explicitly select cuda or auto. Keep float32,
+  offline, local_files_only=True, trust_remote_code=False and device-space isolation.
+- Do not modify other virtual environments, unload existing models, or add paid APIs.
+- Development tests use synthetic CUDA stubs; do not use the real GPU without separate authorization.
 - No external network requests during inference. `setup-model` is an explicit separate download.
 - Preserve the conjunctive positive AND negative >= threshold rule. No ANN-only acceptance.
 - Apply saved literal exclusion rules before embedding and at every export through the common core.

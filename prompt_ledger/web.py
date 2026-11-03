@@ -1,17 +1,34 @@
 import base64
 import binascii
-import json
 import secrets
+import time
 from pathlib import Path
 
-from fastapi import FastAPI
+import anyio
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
-from .config import MAX_BATCH_BYTES, MAX_FILES, Config, LedgerError
+from .batches import DryBatch
+from .config import MAX_BATCH_BYTES, Config, LedgerError
 from .core import Ledger
 from .parsers import extract
+from .streaming import MetadataStream
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """Own the iterator through send failures, disconnects and cancellation."""
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Disconnect cancellation must not interrupt async-generator finalization.
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
 
 STATIC = Path(__file__).resolve().parent / "static"
 MAX_REQUEST = (MAX_BATCH_BYTES * 4 // 3) + 128 * 1024
@@ -20,12 +37,12 @@ MAX_REQUEST = (MAX_BATCH_BYTES * 4 // 3) + 128 * 1024
 class FileInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=512)
-    content_base64: str = Field(max_length=14 * 1024 * 1024)
+    content_base64: str
 
 
 class BatchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    files: list[FileInput] = Field(min_length=1, max_length=MAX_FILES)
+    files: list[FileInput] = Field(min_length=1)
     dry_run: bool = False
     check_only: bool = False
 
@@ -67,6 +84,23 @@ class LocalBoundary:
                 {"schema_version": 1, "error": {"code": "forbidden", "message": failure[1]}},
                 status_code=failure[0],
             )(scope, receive, send)
+
+        async def secure_send(event):
+            if event["type"] == "http.response.start":
+                event["headers"] += [
+                    (b"cache-control", b"no-store"),
+                    (b"x-content-type-options", b"nosniff"),
+                    (
+                        b"content-security-policy",
+                        b"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                    ),
+                    (b"referrer-policy", b"no-referrer"),
+                ]
+            await send(event)
+
+        if scope["path"] == "/api/file" and scope["method"] == "POST":
+            return await self.app(scope, receive, secure_send)
+
         # Bound chunked bodies before FastAPI/JSON parsing; Content-Length is untrusted.
         body = bytearray()
         while True:
@@ -88,19 +122,6 @@ class LocalBoundary:
                 return await receive()
             delivered = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
-
-        async def secure_send(event):
-            if event["type"] == "http.response.start":
-                event["headers"] += [
-                    (b"cache-control", b"no-store"),
-                    (b"x-content-type-options", b"nosniff"),
-                    (
-                        b"content-security-policy",
-                        b"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-                    ),
-                    (b"referrer-policy", b"no-referrer"),
-                ]
-            await send(event)
 
         await self.app(scope, replay, secure_send)
 
@@ -177,8 +198,6 @@ def create_app(cfg=None, ledger=None, port=8765):
             files = [(f.name, base64.b64decode(f.content_base64, validate=True)) for f in batch.files]
         except (ValueError, binascii.Error):
             raise LedgerError("base64", "Invalid base64 file content.") from None
-        if sum(len(raw) for _, raw in files) > MAX_BATCH_BYTES:
-            raise LedgerError("batch_limit", "Total files exceed 20 MiB.")
         if batch.check_only:
             results = []
             for name, raw in files:
@@ -190,14 +209,65 @@ def create_app(cfg=None, ledger=None, port=8765):
             return {"schema_version": 1, "check_only": True, "results": results}
         return ledger.ingest(files, batch.dry_run)
 
+    dry_batches = {}
+
+    @app.post("/api/dry-batch")
+    async def begin_dry_batch():
+        if any(not job.finished.is_set() for job in dry_batches.values()):
+            raise LedgerError("batch_busy", "Another dry-run is active.")
+        dry_batches.clear()
+        batch_id = secrets.token_urlsafe(24)
+        dry_batches[batch_id] = DryBatch(ledger)
+        return {"schema_version": 1, "batch_id": batch_id}
+
+    @app.delete("/api/dry-batch/{batch_id}")
+    async def end_dry_batch(batch_id: str):
+        job = dry_batches.get(batch_id)
+        complete = True if job is None else await run_in_threadpool(job.close)
+        if complete:
+            dry_batches.pop(batch_id, None)
+        return {"schema_version": 1, "rolled_back": complete, "cancellation_requested": True}
+
+    @app.post("/api/file", summary="Stream one file without a file-size cap; no disk image copy")
+    async def stream_file(request: Request, name: str, check_only: bool = False, batch_id: str | None = None):
+        stream = MetadataStream(name)
+        async for chunk in request.stream():
+            if batch_id and batch_id in dry_batches:
+                dry_batches[batch_id].last_activity = time.monotonic()
+            stream.feed(chunk)
+        raw = stream.finish()
+        if check_only:
+            try:
+                extract(name, raw)
+                result = {"status": "parsed"}
+            except LedgerError as exc:
+                result = {"status": "review", "reason": exc.code}
+            return {"schema_version": 1, "results": [result]}
+        if batch_id:
+            job = dry_batches.get(batch_id)
+            if job is None:
+                raise LedgerError("batch_closed", "Dry-run expired; restart the selection.")
+            result = await run_in_threadpool(job.submit, name, raw)
+            return {"schema_version": 1, "dry_run": True, "results": [result]}
+        return await run_in_threadpool(ledger.ingest, [(name, raw)])
+
     @app.post("/api/review/{record_id}")
     def resolve(record_id: int, correction: Correction):
         return ledger.resolve(record_id, correction.positive, correction.negative)
 
     @app.get("/api/export", summary="Explicitly export accepted prompt text (not privacy mode)")
     def export():
-        return Response(
-            json.dumps(ledger.export(), ensure_ascii=False),
+        async def chunks():
+            # SQLite iterator stays on this event-loop thread, including cleanup.
+            iterator = ledger.export_chunks()
+            try:
+                for chunk in iterator:
+                    yield chunk.encode("utf-8")
+            finally:
+                iterator.close()
+
+        return ClosingStreamingResponse(
+            chunks(),
             media_type="application/json",
             headers={"Content-Disposition": 'attachment; filename="accepted.json"'},
         )

@@ -2,11 +2,13 @@ import argparse
 import contextlib
 import json
 import sys
+from dataclasses import replace
 
-from .config import MAX_BATCH_BYTES, MAX_FILE, MAX_FILES, Config, LedgerError, contained
+from .config import Config, LedgerError
 from .core import Ledger
 from .embedding import setup_model
-from .parsers import PARSERS, extract
+from .inputs import read_inputs
+from .parsers import extract
 
 
 class Parser(argparse.ArgumentParser):
@@ -17,6 +19,7 @@ class Parser(argparse.ArgumentParser):
 def parser():
     p = Parser(description="Prompt Ledger: metadata-only local prompt deduplication")
     p.add_argument("--root", help="Project root; overrides LEDGER_ROOT. Paths inside it stay relative.")
+    p.add_argument("--device", choices=("cpu", "cuda", "auto"), help="Runtime-only device override")
     sub = p.add_subparsers(dest="command", required=True, parser_class=Parser)
     sub.add_parser("status")
     rules = sub.add_parser("rules", help="Persistent literal exclusion rules")
@@ -45,52 +48,32 @@ def parser():
     return p
 
 
-def read_inputs(cfg, paths, recursive):
-    root = cfg.path("input_dir")
-    selected = []
-    for name in paths:
-        target = contained(root, name)
-        if target.is_dir():
-            iterator = target.rglob("*") if recursive else target.iterdir()
-            expanded = []
-            for child in iterator:
-                rel = child.relative_to(root).as_posix()
-                contained(root, rel)
-                if child.is_file() and child.suffix.lower() in PARSERS:
-                    expanded.append((rel, child))
-                    if len(selected) + len(expanded) > MAX_FILES:
-                        raise LedgerError("batch_limit", "Select at most 20 files per batch.")
-            selected.extend(sorted(expanded))
-        else:
-            selected.append((name, target))
-    if not selected or len(selected) > MAX_FILES:
-        raise LedgerError("batch_limit", "Select 1–20 files.")
-    files, total = [], 0
-    for name, path in selected:
-        if not path.is_file() or path.stat().st_size > MAX_FILE:
-            raise LedgerError("file_limit", "Input must be a regular file of at most 10 MiB.")
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_FILE + 1)
-        total += len(raw)
-        if len(raw) > MAX_FILE or total > MAX_BATCH_BYTES:
-            raise LedgerError("batch_limit", "Batch size limit exceeded.")
-        files.append((name, raw))
-    return files
-
-
 def execute(args):
     cfg = Config.load(args.root)
+    if args.device:
+        cfg = replace(cfg, device=args.device)
     if args.command in ("import", "batch"):
         files = read_inputs(cfg, args.paths, args.recursive)
         if args.check_only:
-            results = []
+            results, counts, processed = [], {}, 0
             for name, raw in files:
                 try:
                     extract(name, raw)
-                    results.append({"status": "parsed"})
+                    result = {"status": "parsed"}
                 except LedgerError as exc:
-                    results.append({"status": "review", "reason": exc.code})
-            return {"schema_version": 1, "check_only": True, "results": results}
+                    result = {"status": "review", "reason": exc.code}
+                counts[result["status"]] = counts.get(result["status"], 0) + 1
+                processed += 1
+                if len(results) < 200:
+                    results.append(result)
+            return {
+                "schema_version": 1,
+                "check_only": True,
+                "results": results,
+                "processed": processed,
+                "counts": counts,
+                "results_truncated": processed > len(results),
+            }
         return Ledger(cfg).ingest(files, args.dry_run)
     if args.command == "setup-model":
         return {"schema_version": 1, "model": setup_model(cfg, args.revision)}
@@ -126,7 +109,20 @@ def main(argv=None):
         # Third-party progress/log output must never corrupt JSON stdout.
         with contextlib.redirect_stdout(sys.stderr):
             result = execute(args)
-        code = 3 if any(r["status"] == "review" for r in result.get("results", [])) else 0
+        code = (
+            3
+            if (
+                result.get("counts", {}).get("review", 0)
+                or any(r["status"] == "review" for r in result.get("results", []))
+            )
+            else 0
+        )
+    except KeyboardInterrupt:
+        result = {
+            "schema_version": 1,
+            "error": {"code": "cancelled", "message": "Import cancelled; transaction rolled back."},
+        }
+        code = 130
     except LedgerError as exc:
         result = {"schema_version": 1, "error": {"code": exc.code, "message": str(exc)}}
         code = 2

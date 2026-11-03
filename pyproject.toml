@@ -8,6 +8,7 @@ dependencies = ["fastapi>=0.115.12,<1", "uvicorn>=0.34.2,<1"]
 
 [project.optional-dependencies]
 model = ["sentence-transformers>=4.1,<6", "transformers>=4.51,<5", "torch>=2.7,<3", "huggingface-hub>=0.30,<1"]
+cuda = ["sentence-transformers>=4.1,<6", "transformers>=4.51,<5", "torch>=2.7,<3", "huggingface-hub>=0.30,<1"]
 dev = ["pytest>=8.3,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
 
 [project.scripts]
@@ -21,7 +22,15 @@ build-backend = "hatchling.build"
 packages = ["prompt_ledger"]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
+torch = [{ index = "pytorch-cpu", extra = "model" }, { index = "pytorch-cuda", extra = "cuda" }]
+
+[tool.uv]
+conflicts = [[{extra = "model"}, {extra = "cuda"}]]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

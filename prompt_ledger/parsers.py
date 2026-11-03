@@ -7,7 +7,7 @@ import struct
 import zlib
 from dataclasses import dataclass
 
-from .config import MAX_FILE, MAX_METADATA, MAX_TEXT, LedgerError, relative_path
+from .config import MAX_METADATA, MAX_TEXT, LedgerError, relative_path
 
 
 @dataclass(frozen=True)
@@ -296,9 +296,13 @@ PARSERS = {".png": png, ".jpg": jpeg, ".jpeg": jpeg, ".json": parse_json}
 
 
 def extract(source, raw):
+    from .streaming import MetadataInput
+
     path = relative_path(source)
-    if len(raw) > MAX_FILE:
-        raise LedgerError("file_limit", "File exceeds the 10 MiB limit.")
+    if isinstance(raw, MetadataInput):
+        if raw.error:
+            raise LedgerError(raw.error, "Input requires review; no content was truncated or accepted.")
+        raw = raw.raw
     parser = PARSERS.get(path.suffix.lower())
     if parser is None:
         raise LedgerError("format", "Supported formats: PNG, JPEG and JSON. Archives are not accepted.")

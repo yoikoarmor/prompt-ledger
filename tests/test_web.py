@@ -71,13 +71,14 @@ def test_streamed_body_limit(client, monkeypatch):
     assert response.status_code == 413
 
 
-def test_file_and_batch_limits(client):
+def test_batch_count_has_no_fixed_limit(client):
     response = client.post(
         "/api/import",
         json={"files": [{"name": "a.json", "content_base64": "e30="}] * 21},
         headers=auth(client),
     )
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["processed"] == 21
 
 
 def test_repeat_review_correction_returns_conflict(client, ledger):

@@ -36,13 +36,46 @@ def cosine(a, b):
 
 
 class QwenEmbedder:
-    """Lazy, CPU-only and offline. Setup is a separate explicitly invoked command."""
+    """Lazy and offline; CPU default with explicit CUDA selection. Setup is separate."""
 
     def __init__(self, cfg):
         self.directory = cfg.path("model_dir")
+        self.requested_device = cfg.device
+        self.device = None
+        self.device_reason = None
         self.model = None
         self.loaded_identity = None
         self.lock = threading.Lock()
+
+    def select_device(self):
+        if self.device is not None:
+            return self.device
+        if self.requested_device == "cpu":
+            self.device = "cpu"
+            return self.device
+        try:
+            import torch
+
+            available = torch.cuda.is_available()
+        except (ImportError, RuntimeError):
+            available = False
+        if not available and self.requested_device == "cuda":
+            raise LedgerError(
+                "cuda_unavailable",
+                "CUDA is unavailable. Install the CUDA extra and a compatible driver, or select cpu.",
+            )
+        self.device = "cuda" if available else "cpu"
+        if not available:
+            self.device_reason = "cuda_unavailable_cpu_fallback"
+        return self.device
+
+    def execution(self):
+        return {
+            "requested": self.requested_device,
+            "selected": self.device,
+            "loaded": self.model is not None,
+            "fallback_reason": self.device_reason,
+        }
 
     @property
     def identity(self):
@@ -62,7 +95,7 @@ class QwenEmbedder:
             "encoding": "symmetric-no-instruction-v1",
             "max_tokens": MAX_TOKENS,
             "dtype": "float32",
-            "device": "cpu",
+            "device": self.select_device(),
             "runtime_versions": runtime_versions(),
             "artifact_hash": hashlib.sha256(
                 json.dumps(value.get("sha256", {}), sort_keys=True).encode()
@@ -70,6 +103,19 @@ class QwenEmbedder:
         }
 
     def encode(self, text):
+        try:
+            return self._encode(text)
+        except RuntimeError as exc:
+            if self.device == "cuda":
+                self.model = None
+                code = "cuda_oom" if "out of memory" in str(exc).lower() else "cuda_runtime"
+                raise LedgerError(
+                    code,
+                    "CUDA inference failed. Free VRAM or retry with an explicit CPU/new ledger root; no silent fallback occurred.",
+                ) from None
+            raise
+
+    def _encode(self, text):
         with self.lock:
             if self.model is None:
                 identity = self.identity
@@ -95,7 +141,7 @@ class QwenEmbedder:
                 torch.set_num_threads(2)
                 self.model = SentenceTransformer(
                     str(self.directory),
-                    device="cpu",
+                    device=self.select_device(),
                     local_files_only=True,
                     trust_remote_code=False,
                     model_kwargs={"torch_dtype": torch.float32},

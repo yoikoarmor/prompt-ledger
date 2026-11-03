@@ -8,6 +8,7 @@ from pathlib import Path
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Prompt Ledger 起動確認")
     parser.add_argument("--check", action="store_true", help="確認のみ。サーバーやDBを起動しない")
+    parser.add_argument("--device", choices=("cpu", "cuda", "auto"))
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parent
     if any(importlib.util.find_spec(name) is None for name in ("fastapi", "uvicorn")):
@@ -45,7 +46,8 @@ def main(argv=None):
         print("モデル未準備でも画面と解析のみを利用できます。", flush=True)
         from prompt_ledger.cli import main as cli_main
 
-        return cli_main(["--root", str(root), "serve"])
+        device_args = ["--device", args.device] if args.device else []
+        return cli_main(["--root", str(root), *device_args, "serve"])
     except KeyboardInterrupt:
         return 130
     except Exception:  # noqa: BLE001 - keep paths and private contents out of launch errors

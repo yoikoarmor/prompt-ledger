@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 let token = "",
   selected = [],
+  importController = null,
   records = [],
   filter = "all",
   busy = false,
@@ -60,29 +61,20 @@ function setBusy(value) {
   $("import").disabled = value || !selected.length;
   $("check").disabled = value || !selected.length;
   $("files").disabled = value;
+  $("folder").disabled = value;
+  $("cancel").disabled = !value;
   $("clear").disabled = value;
   $("import").textContent = value ? "ローカルで処理中…" : "比較して取り込む →";
 }
 function selectFiles(files) {
   if (busy) return;
-  const list = Array.from(files);
-  if (
-    list.length > 20 ||
-    list.reduce((n, f) => n + f.size, 0) > 20 * 1024 * 1024 ||
-    list.some((f) => f.size > 10 * 1024 * 1024)
-  )
-    return notify(
-      "最大20件、1件10 MiB、合計20 MiB以内で選択してください。",
-      true,
-    );
-  if (list.some((f) => !/\.(png|jpe?g|json)$/i.test(f.name)))
-    return notify("PNG / JPEG / JSON のみ選択できます。", true);
+  const list = Array.from(files).filter(f => /\.(png|jpe?g|json)$/i.test(f.name));
   selected = list;
   $("selection-label").textContent = list.length
     ? `${list.length} 件を選択 · ${(list.reduce((n, f) => n + f.size, 0) / 1024).toFixed(0)} KiB`
     : "ファイル未選択";
   $("file-list").replaceChildren(
-    ...list.map((f) => {
+    ...list.slice(0, 100).map((f) => {
       const li = document.createElement("li");
       li.textContent = f.name;
       return li;
@@ -216,7 +208,13 @@ async function refresh(append = false) {
   $("duplicate-count").textContent = status.counts.duplicate;
   $("review-count").textContent = status.pending_review;
   $("threshold").textContent = status.threshold.toFixed(2);
+  if (status.execution) {
+    $("device-mode").textContent = `${status.execution.requested} → ${status.execution.selected || "未選択"} (${status.execution.loaded ? "ロード済み" : "未ロード"})`;
+  }
   $("model-notice").hidden = status.model_state !== "needs_setup";
+  $("runtime-notice").textContent = status.model_error === "cuda_unavailable"
+    ? "CUDAが利用できません。CUDA版依存・ドライバを確認するか、cpu / auto を選んで再起動してください。"
+    : "READMEのsetup手順を確認してください。メタデータ確認はモデルなしでも利用できます。";
   if (status.model?.model_id === "synthetic-test-only") {
     $("model-name").textContent = "Synthetic test";
     $("model-detail").textContent = "合成ベクトル · Qwen 実測ではありません";
@@ -224,56 +222,49 @@ async function refresh(append = false) {
   $("more").hidden = data.records.length < 100;
   render();
 }
-async function encodeFile(file) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let value = "";
-  for (let i = 0; i < bytes.length; i += 32768)
-    value += String.fromCharCode(...bytes.subarray(i, i + 32768));
-  return { name: file.name, content_base64: btoa(value) };
-}
 async function ingest(checkOnly) {
   setBusy(true);
+  importController = new AbortController();
+  let batchId = null, processed = 0;
+  const counts = {}, previews = [];
   try {
-    const files = await Promise.all(selected.map(encodeFile));
-    const data = await api("/api/import", {
-      method: "POST",
-      body: JSON.stringify({
-        files,
-        dry_run: $("dry-run").checked,
-        check_only: checkOnly,
-      }),
-    }).then((r) => r.json());
-    if (checkOnly) {
-      const n = data.results.filter((r) => r.status === "parsed").length;
-      notify(
-        `メタデータ確認: ${n} 件抽出可能 / ${data.results.length - n} 件要確認（保存なし）`,
-      );
-    } else if (data.dry_run) {
-      preview = true;
-      $("more").hidden = true;
-      records = data.results;
-      render();
-      $("result-description").textContent =
-        "試行結果です。保存していません。表示IDは仮のものです。";
-      notify("試行が完了しました。データは保存していません。");
-    } else {
-      await refresh();
-      $("result-description").textContent =
-        "直近100件を表示。同一のペアは再登録せず既存の判定を再利用します。";
-      const reused = data.results.filter((r) => r.reused).length;
-      notify(
-        `${data.results.length} 件を処理しました（うち ${reused} 件は既存記録）。`,
-      );
+    if (!checkOnly && $("dry-run").checked) {
+      batchId = (await api("/api/dry-batch", {method: "POST"}).then(r => r.json())).batch_id;
     }
+    for (const file of selected) {
+      if (importController.signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const params = new URLSearchParams({name: file.webkitRelativePath || file.name, check_only: String(checkOnly)});
+      if (batchId) params.set("batch_id", batchId);
+      const data = await api(`/api/file?${params}`, {
+        method: "POST", body: file, headers: {"Content-Type": "application/octet-stream"},
+        signal: importController.signal,
+      }).then(r => r.json());
+      const result = data.results[0];
+      counts[result.status] = (counts[result.status] || 0) + 1;
+      if (previews.length < 200) previews.push(result);
+      processed++;
+      $("selection-label").textContent = `${processed} / ${selected.length} 件処理済み`;
+    }
+    if (batchId) {
+      await api(`/api/dry-batch/${batchId}`, {method: "DELETE"});
+      batchId = null;
+      preview = true; records = previews; render(); $("more").hidden = true;
+    } else if (!checkOnly) await refresh();
+    notify(`${processed} 件完了 / ${Object.entries(counts).map(([k,v]) => `${labels[k] || k}: ${v}`).join(" / ")}`);
   } catch (err) {
-    notify(err.message, true);
+    notify(err.name === "AbortError" ? "中止しました。通常取込の処理済み記録は保持します。試行の中止を要求しました。実行中の推論終了後にrollbackされます。" : err.message, true);
   } finally {
+    if (batchId) await api(`/api/dry-batch/${batchId}`, {method: "DELETE"}).catch(() => {});
+    importController = null;
     setBusy(false);
   }
 }
+$("folder").onchange = (event) => selectFiles(event.target.files);
+$("cancel").onclick = () => importController?.abort();
 $("files").onchange = (event) => selectFiles(event.target.files);
 $("clear").onclick = () => {
   $("files").value = "";
+  $("folder").value = "";
   selectFiles([]);
 };
 $("dropzone").ondragover = (event) => {
@@ -366,6 +357,20 @@ document.querySelectorAll(".tab").forEach(
 );
 $("export").onclick = async () => {
   try {
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({suggestedName: "accepted.json"});
+      const response = await api("/api/export");
+      let writable;
+      try {
+        writable = await handle.createWritable();
+      } catch (error) {
+        await response.body.cancel().catch(() => {});
+        throw error;
+      }
+      await response.body.pipeTo(writable);
+      notify("JSON export completed.");
+      return;
+    }
     const blob = await api("/api/export").then((r) => r.blob());
     const link = document.createElement("a"),
       url = URL.createObjectURL(blob);

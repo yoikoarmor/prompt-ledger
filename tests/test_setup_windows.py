@@ -108,3 +108,58 @@ def test_setup_batch_no_python(tmp_path):
     )
     assert result.returncode == 0
     assert not (root / ".cache").exists()
+
+
+def test_cuda_setup_selects_exclusive_locked_extra(tmp_path):
+    python = tmp_path / ".venv/Scripts/python.exe"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    with (
+        patch.object(setup_helper, "run") as run,
+        patch.object(
+            setup_helper.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "uv 0.11.7 (synthetic)"),
+        ),
+    ):
+        assert setup_helper.setup(tmp_path, model_revision="a" * 40, cuda=True) == 0
+    commands = [call.args[0] for call in run.call_args_list]
+    assert "cuda" in commands[0] and "model" not in commands[0]
+    assert "--frozen" in commands[0]
+    assert commands[1][-3:] == ["setup-model", "--revision", "a" * 40]
+    assert setup_helper.main(["--cuda", "--skip-model"]) == 2
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("cuda", [False, True])
+def test_fresh_and_existing_setup_select_exactly_one_backend(tmp_path, existing, cuda):
+    root = tmp_path / "synthetic spaced root"
+    root.mkdir()
+    marker = root / "data.txt"
+    marker.write_text("preserve")
+    python = root / ".venv/Scripts/python.exe"
+    if existing:
+        python.parent.mkdir(parents=True)
+        python.touch()
+    commands = []
+
+    def run(command, cwd, env=None):
+        commands.append(command)
+        if "venv" in command:
+            python.parent.mkdir(parents=True)
+            python.touch()
+
+    with (
+        patch.object(setup_helper, "run", run),
+        patch.object(
+            setup_helper.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, "uv 0.11.7 (test)"),
+        ),
+    ):
+        assert setup_helper.setup(root, cuda=cuda) == 0
+    sync = next(command for command in commands if "sync" in command)
+    assert sync[sync.index("--extra") + 1] == ("cuda" if cuda else "model")
+    assert "--inexact" in sync and "--frozen" in sync
+    assert sum("venv" in command for command in commands) == (0 if existing else 1)
+    assert marker.read_text() == "preserve"

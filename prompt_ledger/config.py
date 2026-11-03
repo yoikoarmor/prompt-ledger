@@ -3,9 +3,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-MAX_FILE = 10 * 1024 * 1024
 MAX_BATCH_BYTES = 20 * 1024 * 1024
-MAX_FILES = 20
 MAX_METADATA = 1024 * 1024
 MAX_TEXT = 128 * 1024
 MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
@@ -50,6 +48,7 @@ class Config:
     model_dir: str = "models/qwen3-embedding-0.6b"
     input_dir: str = "input"
     output_dir: str = "outputs"
+    device: str = "cpu"
 
     @classmethod
     def load(cls, root=None):
@@ -59,9 +58,11 @@ class Config:
         values = json.loads(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
         if values.pop("schema_version", 1) != 1:
             raise LedgerError("config", "Unsupported configuration schema.")
-        if set(values) - {"threshold", "data_dir", "model_dir", "input_dir", "output_dir"}:
+        if set(values) - {"threshold", "data_dir", "model_dir", "input_dir", "output_dir", "device"}:
             raise LedgerError("config", "Unknown configuration key.")
         result = cls(root, **values)
+        if result.device not in ("cpu", "cuda", "auto"):
+            raise LedgerError("device", "Device must be cpu, cuda or auto.")
         if not isinstance(result.threshold, (float, int)) or not 0 < result.threshold <= 1:
             raise LedgerError("config", "Threshold must be in (0, 1].")
         for key in ("data_dir", "model_dir", "input_dir", "output_dir"):

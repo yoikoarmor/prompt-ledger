@@ -6,10 +6,10 @@ User-selected files → bounded parser registry → explicit positive/negative p
 current literal exclusion check → exact pair hash lookup → offline Qwen embeddings → exhaustive cosine comparisons →
 accepted / duplicate / review records → accepted-only JSON export.
 
-The browser, API and CLI all enter `Ledger.ingest`. They do not implement their own
+The browser, API and CLI all enter the Ledger core. They do not implement their own
 similarity rules. Parsing is independent, so check-only works without a model.
-No file is read based on an API-supplied disk path. Browser data is base64 in a
-bounded JSON request; CLI files must remain within the configured input root.
+No file is read based on an API-supplied disk path. Browser data streams one file at a time through the metadata sieve; the legacy
+base64 API keeps a bounded JSON envelope. CLI files stay in the configured input root.
 Image bytes exist only transiently in memory. PNG compressed pixels are skipped,
 JPEG traversal stops before scan data. Neither path decodes pixels.
 
@@ -42,7 +42,7 @@ the resulting accepted/duplicate entry. It does not overwrite raw history. If th
 correction still fails token limits, the original remains unresolved.
 Once resolved, further corrections to the same review return a conflict rather
 than replacing its historical resolution link.
-Export reads in one transaction and includes only accepted records. Atomic file
+Export streams one row at a time in one read snapshot and includes only accepted records. Atomic file
 replacement keeps an older export intact if replacement fails.
 
 ## Exclusion rules
@@ -62,7 +62,7 @@ matching terms require explicit text mode. See EXCLUSIONS.md for the complete co
 
 Japanese, quiet warm paper background, green accents, responsive two-column layout.
 Top: purpose, threshold and precise AND rule. Counts distinguish accepted,
-duplicates and unresolved review. Left: explicit user selection, limits, dry-run,
+duplicates and unresolved review. Left: explicit file/folder selection, progress, cancellation, dry-run,
 parse-only and import. Right: privacy-first records with filter tabs, paired scores,
 nearest IDs, review correction and deliberate export. No image previews, remote
 fonts, analytics, third-party scripts, or remote assets. DOM text uses textContent,
@@ -76,7 +76,15 @@ current explicit text-visibility setting.
 HTTP bind is exactly 127.0.0.1; exact Host and Origin checks resist DNS rebinding.
 Fetch metadata blocks cross-site calls; ephemeral token protects all `/api/*`.
 The token is obtained from same-origin `/session`; no local-user isolation is claimed.
-Body streaming is bounded before JSON decoding, then decoded file limits apply.
+Legacy JSON requests retain a transport budget before JSON decoding. The raw
+`/api/file` path streams image data through a bounded metadata sieve with no
+file-size cap. CLI reads 64 KiB chunks; supported metadata is retained and image
+payload is discarded, never copied to disk. Counts are unrestricted; result
+details are capped for display only. Explicit folders are walked without links.
+Browser normal imports commit per file; cancellation preserves completed work.
+Browser dry-run uses one bounded worker queue and a rollback-only transaction
+with an inactivity timeout, so earlier provisional accepts remain visible.
+CLI batches retain all-or-nothing transaction/rollback behavior.
 Compressed metadata decompression is bounded; no ZIP processing exists.
 Malformed or unsupported inputs fail closed to review. This application is intended
 for a trusted local user, not a hostile multiuser machine or public web server.
@@ -84,6 +92,13 @@ Concurrent adversarial filesystem mutation after path checks is outside that loc
 trust boundary; do not make data/model/input directories writable to untrusted users.
 
 ## Deliberately deferred
+
+CPU is default; explicit cuda fails when unavailable, while auto selects CPU only
+if CUDA is unavailable before loading. Runtime device is part of vector-space
+identity; no silent fallback occurs after CUDA OOM or other inference failure.
+Requested/selected device and loaded state are exposed without prompt text.
+CUDA dependencies are locked from the official cu130 index, mutually exclusive
+with the CPU extra. Development validation uses stubs, not competing GPU workloads.
 
 Windows setup downloads the pinned official Qwen snapshot by default. Acquisition
 is separate from inference: official file sizes and LFS SHA-256/Git blob hashes

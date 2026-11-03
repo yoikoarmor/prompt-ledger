@@ -35,7 +35,7 @@ class Element {
   }
 }
 
-async function harness() {
+async function harness(options = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -44,6 +44,7 @@ async function harness() {
   let deferred = false;
   const pending = [];
   const pendingRules = [];
+  const uploads = [], endings = [];
   const status = {
     counts: { accepted: 1, duplicate: 0 },
     pending_review: 0,
@@ -58,9 +59,16 @@ async function harness() {
       createTextNode: (text) => ({ textContent: text }),
       querySelectorAll: () => [],
     },
-    fetch: async (url) => {
+    fetch: async (url, args = {}) => {
       if (url === "/session") return response({ token: "synthetic-token" });
       if (url === "/api/status") return response(status);
+      if (url === "/api/dry-batch") return response({batch_id: "synthetic-batch"});
+      if (url.startsWith("/api/dry-batch/")) { endings.push(url); return response({rolled_back: true}); }
+      if (url.startsWith("/api/file?")) {
+        uploads.push({url, body: args.body});
+        if (options.cancelAfter === uploads.length) element("cancel").onclick();
+        return response({results: [{id: uploads.length, status: "accepted"}]});
+      }
       if (url.startsWith("/api/rules")) {
         if (!deferred) return response({ version: 0, count: 0, terms: [] });
         return new Promise((resolve) =>
@@ -81,6 +89,9 @@ async function harness() {
     setTimeout: () => 0,
     clearTimeout() {},
     console,
+    URLSearchParams,
+    AbortController,
+    DOMException,
   };
   vm.createContext(context);
   const code = fs.readFileSync(
@@ -89,13 +100,34 @@ async function harness() {
   );
   vm.runInContext(
     code +
-      "\nglobalThis.testUI = {refresh, loadRules, render, setRecords: value => records = value, getRecords: () => records};",
+      "\nglobalThis.testUI = {refresh, loadRules, render, ingest, selectFiles, setRecords: value => records = value, getRecords: () => records};",
     context,
   );
   await new Promise(setImmediate);
-  deferred = true;
-  return { element, pending, pendingRules, ui: context.testUI };
+  deferred = !options.bulk;
+  return { element, pending, pendingRules, uploads, endings, ui: context.testUI };
 }
+
+test("folder queue streams large files without arrayBuffer and has no 20-file cap", async () => {
+  const {element, uploads, ui} = await harness({bulk: true});
+  const files = Array.from({length: 25}, (_, i) => ({name: `${i}.png`, webkitRelativePath: `日本語 folder/${i}.png`, size: 100 * 1024 * 1024,
+    arrayBuffer() { throw new Error("Must not buffer images"); }}));
+  element("folder").onchange({target: {files}});
+  await ui.ingest(false);
+  assert.equal(uploads.length, 25);
+  assert.equal(uploads[0].body, files[0]);
+  assert.equal(new URLSearchParams(uploads[0].url.split("?")[1]).get("name"), "日本語 folder/0.png");
+});
+
+test("cancel stops queue and closes dry-run transaction", async () => {
+  const {element, uploads, endings, ui} = await harness({bulk: true, cancelAfter: 1});
+  element("dry-run").checked = true;
+  ui.selectFiles([{name: "a.json", size: 10}, {name: "b.json", size: 10}]);
+  await ui.ingest(false);
+  assert.equal(uploads.length, 1);
+  assert.equal(endings.length, 1);
+  assert.equal(element("cancel").disabled, true);
+});
 
 const rich = {
   id: 1,

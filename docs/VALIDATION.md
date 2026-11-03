@@ -1,3 +1,70 @@
+# CUDA setup path verification
+
+Existing setup.bat forwards --cuda and selects the exclusive cuda extra. No missing
+installer path was found. Official cu130 index lists pinned Windows wheels for Python
+3.10-3.13. Offline uv 0.11.7 dry-run against the existing CPU venv planned removal of
+torch 2.14.1+cpu and installation of 2.14.1+cu130. An empty-target dry-run planned
+45 packages including CUDA torch. No package was downloaded/installed by these checks.
+Setup synthetic suite: 10 passed, covering fresh/existing and CPU/CUDA selections.
+GPU inference was not attempted. Documentation now describes both switch directions.
+
+# ASGI disconnect cleanup follow-up
+
+130 Python tests passed, 1 skipped. Ruff, JS syntax and 5 Node UI tests passed.
+ClosingStreamingResponse owns body_iterator.aclose() in a shielded finally around
+its complete ASGI call. Regression tests cover ASGI 2.3 disconnect cancellation,
+ASGI 2.4 OSError and general send exception. Each retains the response/iterator
+without garbage collection and immediately commits a separate SQLite writer.
+Browser createWritable failure now cancels the fetched response body explicitly.
+No real input, model inference or GPU was used. No commit/push performed.
+
+# Streaming export follow-up
+
+127 Python tests passed, 1 skipped. Synthetic 2000 rows with 8192-character bodies
+produced more than 16 MB while tracemalloc peak stayed below 2 MB (Python heap only,
+not SQLite native RSS or browser memory). Format/count compatibility, exclusion
+snapshot under concurrent rule edit, generator close, interrupted atomic-file cleanup
+and previous-file preservation passed. API uses the same generator with finally cleanup.
+Real images/prompts/GPU were not used. Browser direct-save branch requires a supporting
+browser; the Blob compatibility branch still materializes output.
+
+# Independent review follow-up
+
+123 synthetic Python tests passed, 1 skipped (symlink privilege). Node UI 5 passed.
+Dry-run enqueue/close/final drain now share a mutex, so accepted futures cannot be
+stranded after worker shutdown. Regression fixes the enqueue/close interleaving.
+Per-folder-entry containment/stat OSError becomes input_io and preserves prior
+accepted entries; both failures tested. Export memory limitation remains explicit
+in BULK_CUDA_JA.md; streaming export is deferred. No real input or GPU used.
+
+# Current bulk-input and CUDA validation (2026-11-03)
+
+This section supersedes historical status below. Current changes remain uncommitted
+and await the parent review. No push or remote modification was performed.
+
+- Full synthetic Python suite: 120 passed, 1 skipped (Windows file-symlink privilege).
+- Node UI suite: 5 passed, including streaming 25 large synthetic file objects,
+  cancellation/rollback cleanup, and all three existing privacy race cases.
+- Ruff source/test/setup checks and JavaScript syntax check passed.
+- Browser: explicitly selected a synthetic two-JSON-file folder and imported it
+  sequentially; progress showed 2/2, parse failure went to review, hidden prompt/source
+  remained hidden. No real images, prompt history or GPU workloads were used.
+- PNG 32 MiB pixel payload and JPEG 32 MiB scan payload were discarded incrementally;
+  metadata buffers stayed bounded. 250 synthetic folder entries processed without
+  the old 20-file ceiling. Corruption, metadata oversize, permission failure,
+  Japanese/space/long relative paths, junction cycle and transaction cancellation tested.
+- CUDA device selection, auto CPU fallback and VRAM failure tested with stubs only.
+  Official PyTorch CUDA 13.0 dependency index is pinned in uv.lock; no CUDA install
+  or real GPU inference was performed. GPU/driver compatibility and VRAM use remain
+  unverified. Existing CPU Qwen smoke from the preceding setup task remains separate.
+- Metadata/text/model budgets remain explicit; legacy base64 JSON API keeps a
+  transport budget. Unlimited image-size input uses /api/file. No silent truncation.
+- Memory is bounded for streamed image payloads, not all application operations:
+  directory sorting/browser FileList scale with entries, exact comparison runtime
+  grows with accepted records, and JSON export still materializes its result.
+
+## Historical implementation record
+
 # Implementation validation — 2026-11-02
 
 ## 2026-11-03 exclusion feature follow-up

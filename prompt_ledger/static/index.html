@@ -13,7 +13,7 @@
         ><span class="mark" aria-hidden="true">P<span>·</span></span
         >Prompt Ledger</a
       ><span class="local"
-        ><i></i> LOCAL ONLY <span class="cpu">/ CPU</span></span
+        ><i></i> LOCAL ONLY <span class="cpu" id="device-mode">/ CPU</span></span
       >
     </header>
     <main>
@@ -38,7 +38,7 @@
         <span class="notice-icon">i</span>
         <div>
           <strong>Qwen モデルのセットアップが必要です</strong>
-          <p>
+          <p id="runtime-notice">
             まず README の setup-model
             手順を実行してください。メタデータの確認はモデルなしでも使えます。
           </p>
@@ -74,13 +74,18 @@
             ><span class="upload-icon" aria-hidden="true">↥</span
             ><strong>ここへファイルをドロップ</strong
             ><span>またはクリックして選択</span
-            ><small>PNG / JPEG / JSON · 最大20件 / 合計20 MiB</small
+            ><small>PNG / JPEG / JSON · サイズ・件数の固定上限なし</small
             ><input
               id="files"
               type="file"
               accept=".png,.jpg,.jpeg,.json"
               multiple
           /></label>
+          <label class="secondary">フォルダを選択（下位フォルダを含む）
+            <input id="folder" type="file" webkitdirectory multiple />
+          </label>
+          <p class="muted">1ファイルずつ送信・処理します。選択一覧は先頭100件。メタデータ安全予算とモデルのトークン上限は維持します。</p>
+          <button class="secondary" id="cancel" disabled>処理を中止</button>
           <div class="selection">
             <span id="selection-label">ファイル未選択</span
             ><button class="text-button" id="clear" type="button">

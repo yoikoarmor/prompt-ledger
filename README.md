@@ -1,5 +1,8 @@
 # Prompt Ledger
 
+フォルダ入力・大量ファイルの逐次処理・中止操作・CUDA選択に対応しています。
+詳しい手順と制約は [大量入力とCUDA](docs/BULK_CUDA_JA.md) を参照してください。
+
 ローカル専用のプロンプト整理アプリ。ユーザーが選んだ PNG / JPEG / JSON の
 **メタデータだけ**を解析し、Positive と Negative を Qwen Embedding で別々に比較します。
 採用したペアだけを JSON に書き出します。日本語 UI、CLI、JSON API は同じ判定コアを使います。
@@ -123,8 +126,9 @@ uv run --frozen --extra model prompt-ledger --root . serve
 `manifest.json` を作成するため、重み1ファイルを手動で置くだけでは起動できません。
 モデルは本体ZIPに同梱しません。QwenモデルはApache-2.0で別途提供されます。
 setup-model はネットワークを使いますが、入力画像・プロンプトを送信しません。
-推論は `local_files_only=True`、`trust_remote_code=False`、CPU、float32、2 threads。
-CUDA / GPU を使用せず、既存モデルを unload しません。重みは自動取得しません。
+推論は `local_files_only=True`、`trust_remote_code=False`、既定CPU、float32、2 threads。
+CUDAは `setup.bat --cuda` と `start.bat --device cuda` で明示選択できます。
+他のモデルを unload しません。推論中に重みを自動取得しません。
 初回ロード時に取得ファイルの SHA-256 を確認します。
 同一revisionの管理対象ファイルは検証して再開・修復します。別revisionや管理情報のない既存ファイルは変更せず停止します。
 
@@ -220,7 +224,7 @@ uv run --frozen --extra model prompt-ledger --root . export --output accepted.js
 フォルダ指定は直下だけ。下位も含める場合は `--recursive` を明示。
 明示した引数順は保持します。フォルダ内の展開だけを相対パス順に整列し、
 その引数の位置へ挿入します。結果配列もこの処理順に対応します。
-1回につき1–20ファイル、1ファイル10 MiB、合計20 MiB、metadata合計1 MiB。
+ファイル件数・ファイルサイズの固定上限はありません。逐次処理し、metadata安全予算1 MiBは維持します。
 拡張子対象外やZIPは解析しません。symlink/junction、絶対参照、`..`、Windows ADSを拒否します。
 通常のCLI stdoutは常に単一JSON、diagnosticsはstderr。`--help`のみ人間向けテキストです。
 すべてのJSON応答に `schema_version: 1`。

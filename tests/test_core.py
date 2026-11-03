@@ -251,7 +251,7 @@ def test_cli_preserves_explicit_order_and_batch_winner(cfg, ledger):
     root.mkdir()
     (root / "b.json").write_bytes(payload("base"))
     (root / "a.json").write_bytes(payload("boundary"))
-    files = read_inputs(cfg, ["b.json", "a.json"], False)
+    files = list(read_inputs(cfg, ["b.json", "a.json"], False))
     assert [name for name, _ in files] == ["b.json", "a.json"]
     result = ledger.ingest(files)["results"]
     assert [row["status"] for row in result] == ["accepted", "duplicate"]

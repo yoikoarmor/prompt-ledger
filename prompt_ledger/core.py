@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
-from .config import MAX_BATCH_BYTES, MAX_FILES, LedgerError, contained, relative_path
+from .config import LedgerError, contained, relative_path
 from .embedding import QwenEmbedder, cosine, normalize
 from .exclusions import matches, validate_terms
 from .parsers import extract, pair
@@ -154,7 +154,12 @@ class Ledger:
         except LedgerError as exc:
             parsed, digest = None, None
             # Review idempotence includes source and bytes, but not a stored copy.
-            input_hash = "review:" + hashlib.sha256(source.encode() + b"\0" + raw).hexdigest()
+            input_hash = (
+                "review:"
+                + hashlib.sha256(
+                    source.encode() + b"\0" + (raw.fingerprint if hasattr(raw, "fingerprint") else raw)
+                ).hexdigest()
+            )
             problem = exc.code
         version, terms = self._rules(conn)
         blocked = parsed is not None and bool(matches(parsed.positive, parsed.negative, terms))
@@ -233,20 +238,31 @@ class Ledger:
             conn.execute("SELECT * FROM records WHERE id=?", (cur.lastrowid,)).fetchone(), terms=terms
         )
 
-    def ingest(self, files, dry_run=False):
-        if not files or len(files) > MAX_FILES or sum(len(raw) for _, raw in files) > MAX_BATCH_BYTES:
-            raise LedgerError("batch_limit", "Select 1–20 files, at most 20 MiB in total.")
-        for source, _ in files:
-            relative_path(source)
+    def ingest(self, files, dry_run=False, summary=False):
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                results = [self._add(conn, name, raw) for name, raw in files]
+                results, counts, processed = [], {}, 0
+                for name, raw in files:
+                    result = self._add(conn, name, raw)
+                    counts[result["status"]] = counts.get(result["status"], 0) + 1
+                    processed += 1
+                    if not summary and len(results) < 200:
+                        results.append(result)
+                if not processed:
+                    raise LedgerError("empty_input", "No supported input files selected.")
                 conn.rollback() if dry_run else conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-        return {"schema_version": 1, "dry_run": dry_run, "results": results}
+        return {
+            "schema_version": 1,
+            "dry_run": dry_run,
+            "results": results,
+            "processed": processed,
+            "counts": counts,
+            "results_truncated": processed > len(results),
+        }
 
     def resolve(self, record_id, positive, negative):
         corrected = pair(positive, negative)
@@ -308,43 +324,55 @@ class Ledger:
             space = conn.execute("SELECT value FROM meta WHERE key='space'").fetchone()
         try:
             model, model_state = self.embedder.identity, "configured"
-        except (LedgerError, OSError, ValueError):
+            model_error = None
+        except (LedgerError, OSError, ValueError) as exc:
             model, model_state = None, "needs_setup"
+            model_error = getattr(exc, "code", "model_configuration")
         return {
             "schema_version": 1,
             "counts": counts,
             "pending_review": pending,
             "model": model,
             "model_state": model_state,
+            "model_error": model_error,
             "threshold": self.cfg.threshold,
             "space": json.loads(space[0]) if space else None,
+            "execution": self.embedder.execution() if hasattr(self.embedder, "execution") else None,
         }
 
-    def export(self):
+    def export_chunks(self):
+        """One read snapshot, one row per chunk; close on cancellation."""
         with self.connect() as conn:
             conn.execute("BEGIN")
             _, terms = self._rules(conn)
             space = conn.execute("SELECT value FROM meta WHERE key='space'").fetchone()
-            rows = conn.execute(
+            header = {"schema_version": 1, "space": json.loads(space[0]) if space else None}
+            yield json.dumps(header, ensure_ascii=False, allow_nan=False)[:-1] + ', "records": ['
+            separator = ""
+            for row in conn.execute(
                 "SELECT id,positive,negative,source,pair_hash FROM records WHERE status='accepted' ORDER BY id"
-            )
-            return {
-                "schema_version": 1,
-                "space": json.loads(space[0]) if space else None,
-                "records": [
-                    dict(row) for row in rows if not matches(row["positive"], row["negative"], terms)
-                ],
-            }
+            ):
+                if not matches(row["positive"], row["negative"], terms):
+                    yield separator + json.dumps(dict(row), ensure_ascii=False, allow_nan=False)
+                    separator = ","
+            yield "]}\n"
+
+    def export(self):
+        """Compatibility helper for callers needing a materialized Python object."""
+        return json.loads("".join(self.export_chunks()))
 
     def export_file(self, name="accepted.json"):
         target = contained(self.cfg.path("output_dir"), name)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.export()
+        count = 0
         fd, temporary = tempfile.mkstemp(prefix=".export-", dir=target.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
-                stream.write("\n")
+                with contextlib.closing(self.export_chunks()) as chunks:
+                    for chunk in chunks:
+                        stream.write(chunk)
+                        if chunk.startswith(('{"id":', ',{"id":')):
+                            count += 1
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
@@ -354,5 +382,5 @@ class Ledger:
         return {
             "schema_version": 1,
             "path": target.relative_to(self.cfg.root).as_posix(),
-            "count": len(payload["records"]),
+            "count": count,
         }

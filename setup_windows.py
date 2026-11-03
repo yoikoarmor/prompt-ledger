@@ -15,7 +15,7 @@ def run(command, root, env=None):
     subprocess.run(command, cwd=root, env=env, check=True)
 
 
-def setup(root, check=False, model_revision=DEFAULT_REVISION):
+def setup(root, check=False, model_revision=DEFAULT_REVISION, cuda=False):
     if not (3, 10) <= sys.version_info[:2] < (3, 14):
         print("[エラー] Python 3.10～3.13が必要です。既存環境は削除しません。")
         return 2
@@ -76,7 +76,7 @@ def setup(root, check=False, model_revision=DEFAULT_REVISION):
         str(python),
     ]
     if model_revision:
-        command.extend(["--extra", "model"])
+        command.extend(["--extra", "cuda" if cuda else "model"])
     print("uv.lockの固定依存を公式配布元から導入します。既存データは削除しません。", flush=True)
     run(command, root, env)
     if model_revision:
@@ -104,7 +104,13 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--model-revision", default=DEFAULT_REVISION, help="公式Qwenの40桁commit SHA")
     parser.add_argument("--skip-model", action="store_true", help="明示的に基本依存のみ導入")
+    parser.add_argument(
+        "--cuda", action="store_true", help="CUDA版PyTorchを導入。実推論やドライバ変更はしない"
+    )
     args = parser.parse_args(argv)
+    if args.cuda and args.skip_model:
+        print("[エラー] --cuda と --skip-model は同時に指定できません。")
+        return 2
     if args.skip_model:
         args.model_revision = None
     if args.model_revision:
@@ -115,10 +121,15 @@ def main(argv=None):
             return 2
         print("モデル取得を選択しました。重み約1.2GB＋CPU依存など数GBの通信・空き容量が必要です。")
         print("公式PyPI/PyTorch/Hugging Faceを使用します。TLS検証は無効化しません。")
+        if args.cuda:
+            print("CUDA 13.0版を導入します。追加の大きな通信・ディスク使用が発生します。")
+            print(
+                "起動は start.bat --device cuda。CUDA不能時にCPUを選ぶ場合は --device auto。ドライバ変更は行いません。"
+            )
     else:
         print("今回は基本依存のみ。Qwen重みは取得しません。任意取得の手順はREADME.mdにあります。")
     try:
-        return setup(Path(__file__).resolve().parent, args.check, args.model_revision)
+        return setup(Path(__file__).resolve().parent, args.check, args.model_revision, cuda=args.cuda)
     except (OSError, subprocess.CalledProcessError):
         print("[エラー] 導入に失敗しました。上のエラーを確認してください。終了コード1。")
         print("証明書エラーは回避せず、日時・正規の証明書チェーンを管理者に確認してください。")
