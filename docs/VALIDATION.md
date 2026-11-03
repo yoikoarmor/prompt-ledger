@@ -287,3 +287,30 @@ This is not an Explorer-to-browser native drag test. Other OS/browser link
 semantics and real images/GPU were not tested. Existing running user apps/ports
 were not restarted or stopped; implementation was completed in an isolated source
 copy after the instruction to preserve the running app.
+# Staged JSON comparison follow-up
+
+The isolated implementation was validated with 189 Python tests passed, 1 skipped
+(file symlink creation privilege unavailable), 30 Node UI tests passed, Ruff and
+JavaScript syntax checks. Tests cover stage parsing limits, source preservation,
+same-batch AND threshold behavior, prepared vectors, CPU/CUDA batch stubs, explicit
+auto fallback display, no CUDA-OOM embedding fallback, committed-prefix replay,
+current-batch rollback, cancellation/publication races, job locks, auth and output
+download. Binary bytes renamed JSON are rejected before staging writes.
+
+An isolated IAB/loopback CPU mathematical-stub browser job processed four records,
+produced two accepted pairs plus a text-free decision audit, and enabled result
+download. Replay retained the source JSON and performed no new mathematical
+encoding. This is not a real Qwen or GPU test; no existing user app/port was changed.
+
+Synthetic timing separates extraction, JSON parsing, encoding, cosine scanning
+and total processing. JSON staging did not guarantee a faster first pass; replay
+reused existing DB pairs. See STAGED_PIPELINE_JA.md for measurements and limits.
+# Staged review P2 follow-up
+
+191 Python tests passed, 1 skipped; 35 Node UI tests passed; Ruff and JS syntax passed.
+Poll network/HTTP failures preserve the nonterminal job ID, cancellation and an
+explicit reconnect control. A new upload cannot overwrite the pending ID. Stalled
+status requests have an Abort deadline. Cancellation while awaiting upload data
+wakes the owning request through a loop-bound cancel scope, removes source.part,
+releases the active lock and permits a new reservation without another body chunk
+or a disconnect. Cross-thread cancel and cancel-before-binding are synthetic tests.

@@ -97,7 +97,7 @@ class QwenEmbedder:
             "dtype": "float32",
             "device": self.select_device(),
             "runtime_versions": runtime_versions(),
-            **({"batching": "pair-max2-padded4096-v1"} if self.select_device() == "cuda" else {}),
+            **({"batching": "texts-max8-padded4096-v2"} if self.select_device() == "cuda" else {}),
             "artifact_hash": hashlib.sha256(
                 json.dumps(value.get("sha256", {}), sort_keys=True).encode()
             ).hexdigest(),
@@ -127,10 +127,23 @@ class QwenEmbedder:
             code = "cuda_oom" if "out of memory" in str(exc).lower() else "cuda_runtime"
             raise LedgerError(code, "CUDA pair inference failed; no model-space fallback occurred.") from None
 
+    def encode_texts(self, texts):
+        if not texts or len(texts) > 32:
+            raise LedgerError("embedding", "Expected 1-32 texts in a bounded batch.")
+        try:
+            self.select_device()
+            return self._encode_many(texts, max_batch=8)
+        except RuntimeError as exc:
+            if self.device == "cuda":
+                self.model = None
+                code = "cuda_oom" if "out of memory" in str(exc).lower() else "cuda_runtime"
+                raise LedgerError(code, "CUDA batch failed; no embedding-space fallback occurred.") from None
+            raise
+
     def _encode(self, text):
         return self._encode_many([text])[0]
 
-    def _encode_many(self, texts):
+    def _encode_many(self, texts, max_batch=2):
         with self.lock:
             if self.model is None:
                 identity = self.identity
@@ -176,7 +189,9 @@ class QwenEmbedder:
                 raise LedgerError(
                     "token_limit", "Prompt exceeds 32768 tokens including special tokens; not truncated."
                 )
-            batch = min(2, len(texts)) if self.device == "cuda" and max(lengths) * len(texts) <= 4096 else 1
+            batch = min(max_batch, len(texts)) if self.device == "cuda" else 1
+            while batch > 1 and max(lengths) * batch > 4096:
+                batch -= 1
             vectors = self.model.encode(
                 texts,
                 batch_size=batch,

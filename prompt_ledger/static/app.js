@@ -1,4 +1,6 @@
 "use strict";
+let comparisonJob = null, comparisonUpload = null, comparisonDownload = null, comparisonOriginalName = null;
+let comparisonPending = false, comparisonWatch = null, comparisonPoll = null;
 const $ = (id) => document.getElementById(id);
 const droppedPaths = new WeakMap();
 const inputName = file => droppedPaths.get(file) || file.webkitRelativePath || file.name;
@@ -52,14 +54,18 @@ async function api(path, options = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(
-      err.error?.message || `処理できませんでした (${res.status})`,
-    );
+    const error = new Error(err.error?.message || `処理できませんでした (${res.status})`);
+    error.code = err.error?.code;
+    error.status = res.status;
+    throw error;
   }
   return res;
 }
 function setBusy(value) {
   busy = value;
+  $("compare-json-run").disabled = value;
+  $("compare-json-file").disabled = value;
+  $("compare-device").disabled = value;
   $("import").disabled = value || !selected.length;
   $("check").disabled = value || !selected.length;
   $("extract").disabled = value || !selected.length;
@@ -375,12 +381,14 @@ $("dropzone").ondragleave = event => {
 $("dropzone").ondrop = receiveDrop;
 // Prevent the browser from opening dropped files, including outside the dashed area.
 document.addEventListener("dragover", event => {
+  if (event.target === $("compare-json-file") && !busy) return;
   if (isFileDrag(event)) {
     event.preventDefault();
     event.dataTransfer.dropEffect = busy ? "none" : "copy";
   }
 });
 document.addEventListener("drop", event => {
+  if (event.target === $("compare-json-file") && !busy) return;
   if (isFileDrag(event)) receiveDrop(event);
 });
 document.addEventListener("dragend", () => $("dropzone").classList.remove("dragover"));
@@ -578,4 +586,135 @@ $("extract").onclick = async () => {
   } finally {
     importController = null; setBusy(false);
   }
+};
+
+function comparisonControls() {
+  setBusy(comparisonPending);
+  if (comparisonPending) $("cancel").disabled = true;
+  $("compare-json-cancel").disabled = !comparisonPending;
+  $("compare-json-resume").disabled = !comparisonPending || !!comparisonWatch || !!comparisonUpload;
+}
+function comparisonUnknown(error) {
+  $("compare-json-progress").textContent = `状態未確認 / job=${comparisonJob} / 監視を再接続するか中止してください。`;
+  notify(`${error.message} ジョブは継続中の可能性があります。監視と中止の経路は保持しています。`, true);
+}
+function monitorComparison() {
+  if (!comparisonPending || !comparisonJob) return Promise.resolve();
+  if (comparisonWatch) return comparisonWatch;
+  const identifier = comparisonJob;
+  comparisonWatch = (async () => {
+    while (true) {
+      const controller = new AbortController();
+      comparisonPoll = controller;
+      const timer = setTimeout(() => controller.abort(), 10000);
+      let job;
+      try {
+        job = await api(`/api/compare-json/${identifier}`, {signal:controller.signal}).then(r=>r.json());
+      } finally {
+        clearTimeout(timer);
+        if (comparisonPoll === controller) comparisonPoll = null;
+      }
+      if (!["uploading", "running", "done", "failed", "cancelled"].includes(job.state)) throw new Error("ジョブ状態の応答形式を確認できません。");
+      const value = job.result || job.progress || {}, execution = value.execution || {};
+      const comparison = value.comparison || value.comparison_backend || {};
+      $("compare-json-progress").textContent = `${job.state} / job=${identifier} / ${value.phase || ""} / ${value.processed || 0} 件 / requested=${job.device} selected=${execution.selected || "未選択"} loaded=${execution.loaded || false} ${execution.fallback_reason || ""} / cosine=${comparison.backend || "not_run"} ${comparison.fallback_reason || ""}`;
+      if (["done", "failed", "cancelled"].includes(job.state)) {
+        comparisonPending = false;
+        if (job.state === "done") {
+          comparisonDownload = identifier;
+          $("compare-json-download").disabled = false;
+        } else {
+          notify(`${job.error || job.state}：完了バッチはDBに保持。元JSONの再指定で再利用します。`, true);
+        }
+        return job;
+      }
+      await new Promise(resolve=>setTimeout(resolve,300));
+    }
+  })().catch(error => {
+    comparisonUnknown(error);
+  }).finally(() => {
+    comparisonWatch = null;
+    comparisonControls();
+    if (!comparisonPending && comparisonDownload) refresh().catch(error=>notify(error.message,true));
+  });
+  comparisonControls();
+  return comparisonWatch;
+}
+$("compare-json-run").onclick = async () => {
+  if (busy || comparisonPending) return;
+  const file = $("compare-json-file").files?.[0];
+  if (!file || !/\.json$/i.test(file.name)) { notify("抽出済みJSONを選択してください。", true); return; }
+  comparisonJob = crypto.randomUUID().replaceAll("-", "");
+  comparisonOriginalName = file.name;
+  comparisonDownload = null;
+  comparisonPending = true;
+  $("compare-json-download").disabled = true;
+  const controller = new AbortController();
+  comparisonUpload = controller;
+  comparisonControls();
+  try {
+    const params = new URLSearchParams({job_id:comparisonJob, device:$("compare-device").value, name:file.name});
+    $("compare-json-progress").textContent = `JSONを転送しています / job=${comparisonJob} / 元ファイルは保持します。`;
+    await api(`/api/compare-json?${params}`, {method:"POST", body:file,
+      headers:{"Content-Type":"application/json"}, signal:controller.signal});
+    if (comparisonUpload === controller) comparisonUpload = null;
+    await monitorComparison();
+  } catch (error) {
+    if (comparisonPending) {
+      if (["job_busy", "usage", "forbidden", "validation"].includes(error.code)) {
+        comparisonPending = false;
+        notify(error.message, true);
+      } else {
+        comparisonUnknown(error);
+        if (error.status) await monitorComparison();
+      }
+    }
+  } finally {
+    if (comparisonUpload === controller) comparisonUpload = null;
+    comparisonControls();
+  }
+};
+$("compare-json-resume").onclick = () => monitorComparison();
+$("compare-json-cancel").onclick = async () => {
+  if (!comparisonPending || !comparisonJob) return;
+  comparisonUpload?.abort();
+  comparisonPoll?.abort();
+  const watcher = comparisonWatch, identifier = comparisonJob;
+  const controller = new AbortController(), timer = setTimeout(()=>controller.abort(),10000);
+  try {
+    await api(`/api/compare-json/${identifier}/cancel`, {method:"POST", signal:controller.signal});
+    if (watcher) await watcher;
+    if (comparisonPending) await monitorComparison();
+  } catch (error) {
+    if (comparisonPending) comparisonUnknown(error);
+  } finally {
+    clearTimeout(timer);
+    comparisonControls();
+  }
+};
+
+$("compare-json-download").onclick = async () => {
+  if (!comparisonDownload) return;
+  const downloadJob = comparisonDownload, originalName = comparisonOriginalName;
+  let response;
+  const suggestedName = originalName?.toLowerCase() === "compared.json" ? "compared-result.json" : "compared.json";
+  try {
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({suggestedName});
+      if (handle.name && originalName && handle.name.toLowerCase() === originalName.toLowerCase()) {
+        throw new Error("元JSONと同名の保存先は使えません。別名で保存してください。");
+      }
+      response = await api(`/api/compare-json/${downloadJob}/result`);
+      let writable;
+      try { writable = await handle.createWritable(); }
+      catch (error) { await response.body.cancel().catch(()=>{}); throw error; }
+      await response.body.pipeTo(writable);
+    } else {
+      const blob = await api(`/api/compare-json/${downloadJob}/result`).then(r=>r.blob());
+      const url = URL.createObjectURL(blob), link = document.createElement("a");
+      link.href=url; link.download=suggestedName; link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    notify("比較済みJSONを保存しました。元JSONは変更していません。");
+  } catch (error) { notify(error.message,true); }
 };

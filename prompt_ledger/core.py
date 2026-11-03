@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from datetime import datetime, timezone
 
 from .comparison import nearest as find_nearest
@@ -145,7 +146,17 @@ class Ledger:
             result["matched_terms"] = matched
         return result
 
-    def _add(self, conn, source, raw=None, corrected=None):
+    def _add(
+        self,
+        conn,
+        source,
+        raw=None,
+        corrected=None,
+        *,
+        prepared_vectors=None,
+        timings=None,
+        comparison_diagnostics=None,
+    ):
         relative_path(source)
         # Only metadata hashes are persisted; image bytes are never stored.
         try:
@@ -184,15 +195,24 @@ class Ledger:
             status, reason = "excluded", "excluded_at_import"
         elif parsed:
             dim = self.embedder.identity["dimension"]
+            encode_started = time.perf_counter()
+            timing_key = "normalization_seconds" if prepared_vectors is not None else "embedding_seconds"
             try:
-                if hasattr(self.embedder, "encode_pair"):
+                if prepared_vectors is not None:
+                    pv = normalize(prepared_vectors[0], dim)
+                    nv = normalize(prepared_vectors[1], dim) if parsed.negative else None
+                elif hasattr(self.embedder, "encode_pair"):
                     vectors = self.embedder.encode_pair(parsed.positive, parsed.negative)
                     pv = normalize(vectors[0], dim)
                     nv = normalize(vectors[1], dim) if parsed.negative else None
                 else:
                     pv = normalize(self.embedder.encode(parsed.positive), dim)
                     nv = normalize(self.embedder.encode(parsed.negative), dim) if parsed.negative else None
+                if timings is not None:
+                    timings[timing_key] += time.perf_counter() - encode_started
             except LedgerError as exc:
+                if timings is not None:
+                    timings[timing_key] += time.perf_counter() - encode_started
                 if exc.code != "token_limit":
                     raise
                 status, reason = "review", exc.code
@@ -201,14 +221,19 @@ class Ledger:
                 # Both vectors are validated. Pin in the same transaction that saves them.
                 self._bind_space(conn, pin=True)
                 status, reason = "accepted", "new_pair"
+                compare_started = time.perf_counter()
                 nearest, ps, ns = find_nearest(
                     conn,
                     pv,
                     nv,
                     terms,
                     device=getattr(self.embedder, "device", "cpu"),
-                    diagnostics=self.comparison_state,
+                    diagnostics=comparison_diagnostics
+                    if comparison_diagnostics is not None
+                    else self.comparison_state,
                 )
+                if timings is not None:
+                    timings["comparison_seconds"] += time.perf_counter() - compare_started
                 if nearest is not None and ps >= self.cfg.threshold and ns >= self.cfg.threshold:
                     status, reason = "duplicate", "both_cosines_at_or_above_threshold"
         cur = conn.execute(
@@ -341,13 +366,15 @@ class Ledger:
             "execution": self.embedder.execution() if hasattr(self.embedder, "execution") else None,
         }
 
-    def export_chunks(self):
+    def export_chunks(self, *, comparison=None):
         """One read snapshot, one row per chunk; close on cancellation."""
         with self.connect() as conn:
             conn.execute("BEGIN")
-            _, terms = self._rules(conn)
+            version, terms = self._rules(conn)
             space = conn.execute("SELECT value FROM meta WHERE key='space'").fetchone()
             header = {"schema_version": 1, "space": json.loads(space[0]) if space else None}
+            if comparison is not None:
+                header["comparison"] = {**comparison, "export_rule_version": version}
             yield json.dumps(header, ensure_ascii=False, allow_nan=False)[:-1] + ', "records": ['
             separator = ""
             for row in conn.execute(
@@ -355,6 +382,14 @@ class Ledger:
             ):
                 if not matches(row["positive"], row["negative"], terms):
                     yield separator + json.dumps(dict(row), ensure_ascii=False, allow_nan=False)
+                    separator = ","
+            if comparison is not None:
+                yield '], "decisions": ['
+                separator = ""
+                for row in conn.execute("SELECT * FROM records ORDER BY id"):
+                    yield separator + json.dumps(
+                        self._public(row, terms=terms), ensure_ascii=False, allow_nan=False
+                    )
                     separator = ","
             yield "]}\n"
 

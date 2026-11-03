@@ -15,6 +15,7 @@ from .batches import DryBatch
 from .config import MAX_BATCH_BYTES, Config, LedgerError
 from .core import Ledger
 from .parsers import extract
+from .pipeline_web import register as register_pipeline
 from .streaming import MetadataStream
 from .text_export import metadata_record
 
@@ -99,7 +100,7 @@ class LocalBoundary:
                 ]
             await send(event)
 
-        if scope["path"] == "/api/file" and scope["method"] == "POST":
+        if scope["path"] in ("/api/file", "/api/compare-json") and scope["method"] == "POST":
             return await self.app(scope, receive, secure_send)
 
         # Bound chunked bodies before FastAPI/JSON parsing; Content-Length is untrusted.
@@ -133,6 +134,7 @@ def create_app(cfg=None, ledger=None, port=8765):
     token = secrets.token_urlsafe(32)
     app = FastAPI(title="Prompt Ledger — local metadata API", version="0.1.0", docs_url=None, redoc_url=None)
     app.add_middleware(LocalBoundary, token=token, port=port)
+    register_pipeline(app, cfg, ledger)
 
     @app.exception_handler(LedgerError)
     async def ledger_error(request, exc):

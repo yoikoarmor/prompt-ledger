@@ -1,5 +1,9 @@
 # Prompt Ledger
 
+画像→抽出JSON→embedding/cosine→別JSONの段階処理は、[JSON比較パイプライン](docs/STAGED_PIPELINE_JA.md)を参照してください。
+UIで抽出JSONを選びCPU/CUDA/autoを明示して比較し、元JSONを保持したまま結果を別保存できます。
+CUDAは最大8テキストのbatchに対応。旧CUDA台帳との混在は拒否します。JSON化だけで速くなる保証はありません。
+
 ファイルはページ内へのドラッグ＆ドロップ、またはクリックで選択できます。
 親フォルダのドロップと「フォルダを選択」は、下位フォルダのPNG/JPEG/JSONも対象にします。
 `img/imgfolder1` と `img/imgfolder2` は `img` の選択で両方含まれます。

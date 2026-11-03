@@ -46,7 +46,8 @@ async function harness(options = {}) {
   let deferred = false;
   const pending = [];
   const pendingRules = [];
-  const uploads = [], endings = [], writes = [];
+  const uploads = [], endings = [], writes = [], pipelineRequests = [];
+  const comparisonStates = [...(options.comparisonStates || [{state:"done",device:"cuda",result:{processed:2,execution:{selected:"cuda",loaded:true}}}])];
   const sink = {closed: false, aborted: false};
   const status = {
     counts: { accepted: 1, duplicate: 0 },
@@ -56,7 +57,7 @@ async function harness(options = {}) {
   };
   const response = (value) => ({ ok: true, json: async () => value });
   const context = {
-    window: {showSaveFilePicker: async () => ({createWritable: async () => ({write: async text => {writes.push(text); if (options.onWrite) await options.onWrite(text,element);}, close: async () => {sink.closed=true;}, abort: async () => {sink.aborted=true;}})})},
+    window: {showSaveFilePicker: async () => ({name: options.saveName, createWritable: async () => ({write: async text => {writes.push(text); if (options.onWrite) await options.onWrite(text,element);}, close: async () => {sink.closed=true;}, abort: async () => {sink.aborted=true;}})})},
     document: {
       addEventListener: (type, handler) => documentEvents.set(type, handler),
       getElementById: element,
@@ -64,7 +65,28 @@ async function harness(options = {}) {
       createTextNode: (text) => ({ textContent: text }),
       querySelectorAll: () => [],
     },
+    crypto: {randomUUID: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
     fetch: async (url, args = {}) => {
+      if (url.startsWith("/api/compare-json")) {
+        pipelineRequests.push({url,args});
+        if (url.endsWith("/result")) return {ok:true,body:{pipeTo:async sink=>{await sink.write("synthetic-output");await sink.close();}}};
+        if (url.endsWith("/cancel")) {
+          if (options.cancelHttpFailure) return {ok:false,status:503,json:async()=>({error:{code:"temporary",message:"synthetic cancel failure"}})};
+          return response({cancellation_requested:true});
+        }
+        if (args.method === "POST") {
+          if (options.cancelComparisonUpload) {
+            await element("compare-json-cancel").onclick();
+            throw new DOMException("synthetic upload abort", "AbortError");
+          }
+          return response({job_id:"a".repeat(32)});
+        }
+        const state = comparisonStates.shift();
+        if (state instanceof Error) throw state;
+        if (state?.httpError) return {ok:false,status:503,json:async()=>({error:{code:"temporary",message:"synthetic HTTP poll failure"}})};
+        if (state === "stall") return new Promise((resolve,reject)=>args.signal.addEventListener("abort",()=>reject(new DOMException("synthetic deadline", "AbortError")),{once:true}));
+        return response(state);
+      }
       if (url === "/session") return response({ token: "synthetic-token" });
       if (url === "/api/status") return response(status);
       if (url === "/api/dry-batch") return response({batch_id: "synthetic-batch"});
@@ -92,7 +114,7 @@ async function harness(options = {}) {
       }
       throw new Error("Unexpected synthetic request");
     },
-    setTimeout: () => 0,
+    setTimeout: (fn, ms) => { if (ms === 300 || (ms === 10000 && options.firePollTimeout)) setImmediate(fn); return 0; },
     clearTimeout() {},
     console,
     URLSearchParams,
@@ -111,7 +133,7 @@ async function harness(options = {}) {
   );
   await new Promise(setImmediate);
   deferred = !options.bulk;
-  return { documentEvents, element, pending, pendingRules, uploads, endings, writes, sink, ui: context.testUI };
+  return { pipelineRequests, documentEvents, element, pending, pendingRules, uploads, endings, writes, sink, ui: context.testUI };
 }
 
 test("folder queue streams large files without arrayBuffer and has no 20-file cap", async () => {
@@ -365,4 +387,116 @@ test("folder scan cancellation ends even while browser reader callback is pendin
  callback([fileEntry('/img/late.png')]);await new Promise(setImmediate);
  assert.match(element('file-list').textContent,/keep.json/);assert.match(element('message').textContent,/中止/);
  assert.equal(element('files').disabled,false);
+});
+
+test("staged JSON uploads original File and shows selected CUDA after bounded progress",async()=>{
+ const {element,pipelineRequests}=await harness({bulk:true,comparisonStates:[
+  {state:"running",device:"cuda",progress:{phase:"embedding",processed:0,execution:{selected:"cuda",loaded:false}}},
+  {state:"done",device:"cuda",result:{processed:2,execution:{selected:"cuda",loaded:true}}}
+ ]});
+ const file=syntheticFile('metadata.json');element('compare-json-file').files=[file];element('compare-device').value='cuda';
+ await element('compare-json-run').onclick();
+ assert.equal(pipelineRequests[0].args.body,file);
+ assert.match(pipelineRequests[0].url,/device=cuda/);
+ assert.equal(element('compare-json-download').disabled,false);
+ assert.match(element('compare-json-progress').textContent,/selected=cuda loaded=true/);
+ assert.ok(!element('result-list').textContent.includes('synthetic private'));
+});
+test("staged JSON shows auto CPU fallback explicitly",async()=>{
+ const {element}=await harness({bulk:true,comparisonStates:[{state:'done',device:'auto',result:{processed:1,execution:{selected:'cpu',loaded:true,fallback_reason:'cuda_unavailable_cpu_fallback'}}}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='auto';
+ await element('compare-json-run').onclick();
+ assert.match(element('compare-json-progress').textContent,/requested=auto selected=cpu/);
+ assert.match(element('compare-json-progress').textContent,/cuda_unavailable_cpu_fallback/);
+});
+test("staged JSON model mismatch reports failure and enables no result download",async()=>{
+ const {element}=await harness({bulk:true,comparisonStates:[{state:'failed',device:'cuda',error:'model_mismatch'}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cuda';
+ await element('compare-json-run').onclick();
+ assert.match(element('message').textContent,/model_mismatch/);
+ assert.equal(element('compare-json-download').disabled,true);
+ assert.equal(element('compare-json-file').disabled,false);
+});
+test("cancel during staged upload sends cancellation for known job identifier",async()=>{
+ const {element,pipelineRequests}=await harness({bulk:true,cancelComparisonUpload:true,comparisonStates:[{state:"cancelled",device:"cpu",error:"cancelled"}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();
+ assert.ok(pipelineRequests.some(r=>r.url.endsWith('/cancel')));
+ assert.equal(element('compare-json-download').disabled,true);
+ assert.equal(element('compare-json-file').disabled,false);
+});
+
+test("staged result download streams to selected new file",async()=>{
+ const {element,sink,writes,pipelineRequests}=await harness({bulk:true,saveName:'compared.json'});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();await element('compare-json-download').onclick();
+ assert.equal(sink.closed,true);assert.ok(writes.includes('synthetic-output'));
+ assert.ok(pipelineRequests.some(r=>r.url.endsWith('/result')));
+});
+test("staged download rejects source JSON filename before opening writable",async()=>{
+ const {element,sink,pipelineRequests}=await harness({bulk:true,saveName:'METADATA.json'});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();await element('compare-json-download').onclick();
+ assert.equal(sink.closed,false);assert.ok(!pipelineRequests.some(r=>r.url.endsWith('/result')));
+ assert.match(element('message').textContent,/元JSONと同名/);
+});
+test("staged JSON file input keeps native drop behavior instead of replacing image queue",async()=>{
+ const {element,ui,documentEvents}=await harness({bulk:true});
+ ui.selectFiles([syntheticFile('image.png')]);
+ const event=syntheticDrop({types:['Files'],files:[syntheticFile('metadata.json')]});
+ event.target=element('compare-json-file');
+ documentEvents.get('dragover')(event);documentEvents.get('drop')(event);
+ assert.equal(event.prevented,false);assert.match(element('file-list').textContent,/image.png/);
+});
+
+for(const failure of [new Error('synthetic poll loss'),{httpError:true}]) {
+ test(`poll failure preserves job controls and reconnects without new upload: ${failure.httpError?'HTTP':'network'}`,async()=>{
+  const {element,pipelineRequests,documentEvents}=await harness({bulk:true,comparisonStates:[failure,{state:'done',device:'cpu',result:{processed:1}}]});
+  element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+  await element('compare-json-run').onclick();
+  const post=pipelineRequests.find(r=>r.args.method==='POST'),id=new URLSearchParams(post.url.split('?')[1]).get('job_id');
+  assert.equal(element('compare-json-run').disabled,true);
+  assert.equal(element('compare-json-cancel').disabled,false);
+  assert.equal(element('compare-json-resume').disabled,false);
+  assert.match(element('compare-json-progress').textContent,new RegExp(id));
+  const drop=syntheticDrop({types:['Files'],files:[syntheticFile('another.json')]});drop.target=element('compare-json-file');
+  documentEvents.get('drop')(drop);assert.equal(drop.prevented,true);
+  await element('compare-json-run').onclick();
+  assert.equal(pipelineRequests.filter(r=>r.args.method==='POST').length,1);
+  await element('compare-json-resume').onclick();
+  assert.equal(element('compare-json-download').disabled,false);
+  assert.equal(element('compare-json-run').disabled,false);
+  assert.equal(element('compare-json-cancel').disabled,true);
+  assert.equal(pipelineRequests.filter(r=>r.args.method==='POST').length,1);
+ });
+}
+test('cancel after a lost poll uses the retained job and confirms terminal state',async()=>{
+ const {element,pipelineRequests}=await harness({bulk:true,comparisonStates:[new Error('synthetic poll loss'),{state:'cancelled',device:'cpu',error:'cancelled'}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();
+ const id=new URLSearchParams(pipelineRequests[0].url.split('?')[1]).get('job_id');
+ await element('compare-json-cancel').onclick();
+ assert.ok(pipelineRequests.some(r=>r.url===`/api/compare-json/${id}/cancel`));
+ assert.equal(element('compare-json-cancel').disabled,true);
+ assert.equal(element('compare-json-run').disabled,false);
+ assert.equal(element('compare-json-download').disabled,true);
+});
+test('failed cancel request retains monitoring and cancellation controls',async()=>{
+ const {element}=await harness({bulk:true,cancelHttpFailure:true,comparisonStates:[new Error('synthetic poll loss'),{state:'done',device:'cpu',result:{processed:1}}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();await element('compare-json-cancel').onclick();
+ assert.equal(element('compare-json-run').disabled,true);
+ assert.equal(element('compare-json-resume').disabled,false);
+ assert.equal(element('compare-json-cancel').disabled,false);
+ await element('compare-json-resume').onclick();
+ assert.equal(element('compare-json-download').disabled,false);
+});
+test('stalled status request has a deadline and can reconnect',async()=>{
+ const {element}=await harness({bulk:true,firePollTimeout:true,comparisonStates:['stall',{state:'done',device:'cpu',result:{processed:1}}]});
+ element('compare-json-file').files=[syntheticFile('metadata.json')];element('compare-device').value='cpu';
+ await element('compare-json-run').onclick();
+ assert.equal(element('compare-json-resume').disabled,false);
+ assert.equal(element('compare-json-cancel').disabled,false);
+ await element('compare-json-resume').onclick();
+ assert.equal(element('compare-json-download').disabled,false);
 });

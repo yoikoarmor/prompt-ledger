@@ -4,11 +4,12 @@ import json
 import sys
 from dataclasses import replace
 
-from .config import Config, LedgerError
+from .config import Config, LedgerError, contained
 from .core import Ledger
 from .embedding import setup_model
 from .inputs import read_inputs
 from .parsers import extract
+from .pipeline import compare_json
 from .text_export import export_text
 
 
@@ -44,6 +45,18 @@ def parser():
     text.add_argument("paths", nargs="+")
     text.add_argument("--recursive", action="store_true")
     text.add_argument("--output", default="metadata.json")
+    staged = sub.add_parser(
+        "compare-json", help="Compare an extraction JSON and atomically write a different accepted JSON"
+    )
+    staged.add_argument("path", help="Extraction JSON relative to output_dir by default")
+    staged.add_argument("--from-input", action="store_true")
+    staged.add_argument("--output", default="compared.json")
+    staged.add_argument("--batch-size", type=int, default=8)
+    staged.add_argument(
+        "--progress",
+        action="store_true",
+        help="Progress JSON to stderr; stdout remains the final machine result",
+    )
     export = sub.add_parser("export")
     export.add_argument("--output", default="accepted.json", help="Relative to output_dir")
     model = sub.add_parser("setup-model")
@@ -82,6 +95,14 @@ def execute(args):
         return Ledger(cfg).ingest(files, args.dry_run)
     if args.command == "extract":
         return export_text(Ledger(cfg), read_inputs(cfg, args.paths, args.recursive), args.output)
+    if args.command == "compare-json":
+        source = contained(cfg.path("input_dir" if args.from_input else "output_dir"), args.path)
+        progress = (
+            (lambda value: print(json.dumps(value, ensure_ascii=True), file=sys.stderr, flush=True))
+            if args.progress
+            else None
+        )
+        return compare_json(Ledger(cfg), source, args.output, batch_size=args.batch_size, progress=progress)
     if args.command == "setup-model":
         return {"schema_version": 1, "model": setup_model(cfg, args.revision)}
     if args.command == "serve":
@@ -127,7 +148,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         result = {
             "schema_version": 1,
-            "error": {"code": "cancelled", "message": "Import cancelled; transaction rolled back."},
+            "error": {
+                "code": "cancelled",
+                "message": "Cancelled; current transaction rolled back; completed stages or batches may remain.",
+            },
         }
         code = 130
     except LedgerError as exc:

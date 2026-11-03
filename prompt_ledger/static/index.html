@@ -101,8 +101,19 @@
             ><input id="dry-run" type="checkbox" />試しに判定する
             <span>保存しません</span></label
           >
+
           <button class="secondary" id="extract" disabled>テキストをJSONに抽出（比較なし）</button>
             <p class="muted">抽出はembedding不要。重複も残し、除外ルールは適用します。JSONには本文が含まれます。</p>
+          <section aria-label="抽出JSONを比較">
+            <h3>抽出JSONから比較して別JSONを保存</h3>
+            <input id="compare-json-file" type="file" accept=".json" aria-label="抽出JSON" />
+            <label>モデルの実行先 <select id="compare-device"><option value="cpu">CPU</option><option value="cuda">CUDA GPU（明示選択）</option><option value="auto">auto（GPU不可ならCPU）</option></select></label>
+            <button class="primary" id="compare-json-run">JSONを比較</button>
+            <button class="secondary" id="compare-json-cancel" disabled>JSON比較を中止</button>
+            <button class="secondary" id="compare-json-resume" disabled>監視を再接続</button>
+            <button class="secondary" id="compare-json-download" disabled>比較済みJSONを保存</button>
+            <p class="muted" id="compare-json-progress" aria-live="polite">元JSONは保持します。GPUは比較開始時にロード。既存DBと異なる空間なら新しいrootが必要です。</p>
+          </section>
             <p class="muted">比較して取り込んだ後、「採用JSONを保存」で既存を含む採用分だけ出力します。重複・除外・要確認は含みません。試行中は保存されません。</p>
             <div class="import-actions">
             <button class="primary" id="import" disabled>

@@ -1,5 +1,13 @@
 # Design: one core, three interfaces
 
+The optional staged path reads a bounded extraction envelope, prepares at most
+one small vector batch, and invokes the same Ledger._add decision inside bounded
+transactions. Completed batches persist for idempotent replay; only the active
+batch rolls back on cancellation. An atomic streamed comparison export contains
+the accepted collection plus a text-free decision audit from one read snapshot.
+JSON uploads and job progress remain behind the existing local token boundary.
+See STAGED_PIPELINE_JA.md for space compatibility, cancellation and performance limits.
+
 ## Data flow
 
 User-selected files → bounded parser registry → explicit positive/negative pair →
