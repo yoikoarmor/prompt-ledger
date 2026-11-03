@@ -1,5 +1,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
+const droppedPaths = new WeakMap();
+const inputName = file => droppedPaths.get(file) || file.webkitRelativePath || file.name;
 let token = "",
   selected = [],
   importController = null,
@@ -67,9 +69,17 @@ function setBusy(value) {
   $("clear").disabled = value;
   $("import").textContent = value ? "ローカルで処理中…" : "比較して取り込む →";
 }
-function selectFiles(files) {
-  if (busy) return;
-  const list = Array.from(files).filter(f => /\.(png|jpe?g|json)$/i.test(f.name));
+function selectFiles(files, {dropped = false} = {}) {
+  if (busy) {
+    if (dropped) notify("処理中です。完了または中止してからファイルをドロップしてください。", true);
+    return;
+  }
+  const incoming = Array.from(files);
+  const list = incoming.filter(f => /\.(png|jpe?g|json)$/i.test(f.name));
+  if (dropped && !list.length) {
+    notify("対応するローカルファイルがありません。PNG / JPEG / JSON をドロップするか、クリックして選択してください。", true);
+    return;
+  }
   selected = list;
   $("selection-label").textContent = list.length
     ? `${list.length} 件を選択 · ${(list.reduce((n, f) => n + f.size, 0) / 1024).toFixed(0)} KiB`
@@ -82,6 +92,10 @@ function selectFiles(files) {
     }),
   );
   setBusy(false);
+  if (dropped) {
+    const skipped = incoming.length - list.length;
+    notify(`${list.length} 件を選択しました。${skipped ? `未対応形式 ${skipped} 件は選択しませんでした。` : "処理方法を選んでください。"}`);
+  }
 }
 function node(tag, className, text) {
   const el = document.createElement(tag);
@@ -237,7 +251,7 @@ async function ingest(checkOnly) {
     }
     for (const file of selected) {
       if (importController.signal.aborted) throw new DOMException("Cancelled", "AbortError");
-      const params = new URLSearchParams({name: file.webkitRelativePath || file.name, check_only: String(checkOnly)});
+      const params = new URLSearchParams({name: inputName(file), check_only: String(checkOnly)});
       if (batchId) params.set("batch_id", batchId);
       const data = await api(`/api/file?${params}`, {
         method: "POST", body: file, headers: {"Content-Type": "application/octet-stream"},
@@ -271,16 +285,105 @@ $("clear").onclick = () => {
   $("folder").value = "";
   selectFiles([]);
 };
+function isFileDrag(event) {
+  const data = event.dataTransfer;
+  return !!data && (Array.from(data.types || []).includes("Files") ||
+    Array.from(data.items || []).some(item => item.kind === "file") || data.files?.length > 0);
+}
+async function collectDropEntries(entries, signal) {
+  const files = [], visited = new Set(), objects = new WeakSet();
+  const component = name => typeof name === "string" && name && ![".", ".."].includes(name) && !/[\\/:\0]/.test(name);
+  const readEntry = invoke => new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, {once: true});
+    const finish = action => value => {
+      signal.removeEventListener("abort", abort); action(value);
+    };
+    try { invoke(finish(resolve), finish(reject)); }
+    catch (error) { signal.removeEventListener("abort", abort); reject(error); }
+  });
+  async function walk(entry, prefix = "", depth = 0) {
+    signal.throwIfAborted();
+    if (!component(entry.name) || depth > 128) throw new Error("安全にたどれないフォルダ構造です。選択は変更していません。");
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.fullPath !== `/${relative}` || visited.has(entry.fullPath) || objects.has(entry) || entry.isSymbolicLink === true) {
+      throw new Error("循環・リンク・範囲外の参照を検出しました。選択は変更していません。");
+    }
+    visited.add(entry.fullPath); objects.add(entry);
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      while (true) {
+        signal.throwIfAborted();
+        const children = await readEntry((resolve, reject) => reader.readEntries(resolve, reject));
+        signal.throwIfAborted();
+        if (!children.length) break;
+        for (const child of children) await walk(child, relative, depth + 1);
+      }
+    } else if (entry.isFile && /\.(png|jpe?g|json)$/i.test(entry.name)) {
+      const file = await readEntry((resolve, reject) => entry.file(resolve, reject));
+      signal.throwIfAborted(); droppedPaths.set(file, relative); files.push(file);
+    }
+  }
+  for (const entry of entries) await walk(entry);
+  return files;
+}
+async function receiveDrop(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  $("dropzone").classList.remove("dragover");
+  if (busy) {
+    notify("処理中です。完了または中止してからファイルをドロップしてください。", true);
+    return;
+  }
+  const data = event.dataTransfer;
+  const items = Array.from(data?.items || []);
+  // Read synchronously: browsers clear the drag data store after the drop handler.
+  const entries = items.map(item => {
+    try { return item.webkitGetAsEntry?.(); } catch { return null; }
+  });
+  if (entries.some(entry => entry?.isDirectory)) {
+    // Snapshot File/Entry objects before awaiting: the drag data store is transient.
+    if (entries.some((entry, i) => !entry && items[i].kind === "file")) {
+      notify("このブラウザではフォルダのドロップを読み取れません。「フォルダを選択」を使ってください。", true);
+      return;
+    }
+    setBusy(true); importController = new AbortController();
+    const signal = importController.signal;
+    notify("サブフォルダを確認しています。ファイルの内容はまだ読み込みません。");
+    try {
+      const files = await collectDropEntries(entries.filter(Boolean), signal);
+      signal.throwIfAborted(); setBusy(false); selectFiles(files, {dropped: true});
+    } catch (error) {
+      notify(error.name === "AbortError" ? "フォルダ選択を中止しました。現在の選択は保持しました。" : "フォルダを安全に読み取れませんでした。循環・範囲外参照・アクセス権を確認し、「フォルダを選択」も試してください。", true);
+    } finally { importController = null; setBusy(false); }
+    return;
+  }
+  let files = Array.from(data?.files || []);
+  if (!files.length) files = items.filter(item => item.kind === "file")
+    .map(item => item.getAsFile?.()).filter(Boolean);
+  selectFiles(files, {dropped: true});
+}
 $("dropzone").ondragover = (event) => {
   event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = busy ? "none" : "copy";
   $("dropzone").classList.add("dragover");
 };
-$("dropzone").ondragleave = () => $("dropzone").classList.remove("dragover");
-$("dropzone").ondrop = (event) => {
-  event.preventDefault();
-  $("dropzone").classList.remove("dragover");
-  selectFiles(event.dataTransfer.files);
+$("dropzone").ondragleave = event => {
+  if (!$("dropzone").contains(event.relatedTarget)) $("dropzone").classList.remove("dragover");
 };
+$("dropzone").ondrop = receiveDrop;
+// Prevent the browser from opening dropped files, including outside the dashed area.
+document.addEventListener("dragover", event => {
+  if (isFileDrag(event)) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = busy ? "none" : "copy";
+  }
+});
+document.addEventListener("drop", event => {
+  if (isFileDrag(event)) receiveDrop(event);
+});
+document.addEventListener("dragend", () => $("dropzone").classList.remove("dragover"));
 $("import").onclick = () => ingest(false);
 $("check").onclick = () => ingest(true);
 $("show-text").onchange = () => {
@@ -443,7 +546,7 @@ $("extract").onclick = async () => {
     let version = null, separator = "", count = 0;
     for (const file of selected) {
       checkCancelled();
-      const params = new URLSearchParams({name: file.webkitRelativePath || file.name, extract_only: "true"});
+      const params = new URLSearchParams({name: inputName(file), extract_only: "true"});
       const data = await api(`/api/file?${params}`, {method: "POST", body: file,
         headers: {"Content-Type": "application/octet-stream"}, signal}).then(r => r.json());
       checkCancelled();

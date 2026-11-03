@@ -26,6 +26,7 @@ class Element {
         .join("")
     );
   }
+  contains(other) { return other === this || this.children.includes(other); }
   append(...children) {
     this.children.push(...children);
   }
@@ -37,6 +38,7 @@ class Element {
 
 async function harness(options = {}) {
   const elements = new Map();
+  const documentEvents = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
@@ -56,6 +58,7 @@ async function harness(options = {}) {
   const context = {
     window: {showSaveFilePicker: async () => ({createWritable: async () => ({write: async text => {writes.push(text); if (options.onWrite) await options.onWrite(text,element);}, close: async () => {sink.closed=true;}, abort: async () => {sink.aborted=true;}})})},
     document: {
+      addEventListener: (type, handler) => documentEvents.set(type, handler),
       getElementById: element,
       createElement: () => new Element(),
       createTextNode: (text) => ({ textContent: text }),
@@ -103,12 +106,12 @@ async function harness(options = {}) {
   );
   vm.runInContext(
     code +
-      "\nglobalThis.testUI = {refresh, loadRules, render, ingest, selectFiles, setRecords: value => records = value, getRecords: () => records};",
+      "\nglobalThis.testUI = {setBusy, refresh, loadRules, render, ingest, selectFiles, setRecords: value => records = value, getRecords: () => records};",
     context,
   );
   await new Promise(setImmediate);
   deferred = !options.bulk;
-  return { element, pending, pendingRules, uploads, endings, writes, sink, ui: context.testUI };
+  return { documentEvents, element, pending, pendingRules, uploads, endings, writes, sink, ui: context.testUI };
 }
 
 test("folder queue streams large files without arrayBuffer and has no 20-file cap", async () => {
@@ -244,3 +247,122 @@ for (const phase of ["record", "final-json"]) {
     assert.ok(!element("message").textContent.includes("exported"));
   });
 }
+
+function syntheticDrop(dataTransfer) {
+  return {dataTransfer, prevented: false, stopped: false,
+    preventDefault() {this.prevented = true;}, stopPropagation() {this.stopped = true;}};
+}
+const syntheticFile = name => ({name, size: 12, arrayBuffer() {throw Error("Must not read file bytes while selecting");}});
+
+test("dropzone selects local files once without uploading or reading bytes", async () => {
+  const {element,uploads}=await harness({bulk:true});
+  const event=syntheticDrop({types:["Files"],files:[syntheticFile("a.PNG"),syntheticFile("b.json")]});
+  element("dropzone").ondrop(event);
+  assert.equal(event.prevented,true);assert.equal(event.stopped,true);
+  assert.match(element("selection-label").textContent,/2/);
+  assert.equal(element("import").disabled,false);assert.equal(uploads.length,0);
+  assert.match(element("message").textContent,/2 件を選択/);
+});
+test("file drop outside zone is selected and prevents browser file navigation", async () => {
+  const {documentEvents,element}=await harness({bulk:true});
+  const event=syntheticDrop({types:["Files"],files:[syntheticFile("outside.json")]});
+  documentEvents.get("drop")(event);
+  assert.equal(event.prevented,true);assert.equal(event.stopped,true);
+  assert.match(element("file-list").textContent,/outside.json/);
+});
+test("drop falls back to file items synchronously when files list is empty", async () => {
+  const {element}=await harness({bulk:true});let reads=0;
+  const event=syntheticDrop({types:["Files"],files:[],items:[{kind:"file",getAsFile(){reads++;return syntheticFile("item.json");}}]});
+  element("dropzone").ondrop(event);
+  assert.equal(reads,1);assert.match(element("file-list").textContent,/item.json/);
+});
+test("unsupported and URL-only drops explain failure without clearing selection", async () => {
+  const {element,ui}=await harness({bulk:true});ui.selectFiles([syntheticFile("keep.json")]);
+  for(const transfer of [{types:["Files"],files:[syntheticFile("notes.txt")]},{types:["text/uri-list"],files:[]}]) {
+    element("dropzone").ondrop(syntheticDrop(transfer));
+    assert.match(element("message").textContent,/対応するローカルファイルがありません/);
+    assert.match(element("file-list").textContent,/keep.json/);
+  }
+});
+test("mixed formats report skipped files and keep supported selection", async () => {
+  const {element}=await harness({bulk:true});
+  element("dropzone").ondrop(syntheticDrop({files:[syntheticFile("yes.json"),syntheticFile("no.txt")]}));
+  assert.match(element("file-list").textContent,/yes.json/);
+  assert.doesNotMatch(element("file-list").textContent,/no.txt/);
+  assert.match(element("message").textContent,/未対応形式 1 件/);
+});
+test("busy drop is prevented with feedback and preserves active queue", async () => {
+  const {element,ui,documentEvents}=await harness({bulk:true});
+  ui.selectFiles([syntheticFile("active.json")]);ui.setBusy(true);
+  const event=syntheticDrop({types:["Files"],files:[syntheticFile("new.json")]});
+  documentEvents.get("drop")(event);
+  assert.equal(event.prevented,true);assert.match(element("message").textContent,/処理中/);
+  assert.match(element("file-list").textContent,/active.json/);
+  assert.equal(element("import").disabled,true);
+});
+test("document handles file drags but leaves ordinary text drag alone", async () => {
+  const {documentEvents}=await harness({bulk:true});
+  const text=syntheticDrop({types:["text/plain"],files:[]});
+  documentEvents.get("dragover")(text);documentEvents.get("drop")(text);
+  assert.equal(text.prevented,false);
+  const file=syntheticDrop({types:["Files"],files:[],dropEffect:"none"});
+  documentEvents.get("dragover")(file);
+  assert.equal(file.prevented,true);assert.equal(file.dataTransfer.dropEffect,"copy");
+});
+
+function fileEntry(path) {
+ const name=path.split('/').pop();
+ return {name,fullPath:path,isFile:true,isDirectory:false,file:ok=>ok(syntheticFile(name))};
+}
+function directoryEntry(path,batches) {
+ return {name:path.split('/').pop(),fullPath:path,isDirectory:true,isFile:false,
+   createReader:()=>{let index=0;return {readEntries:ok=>ok(batches[index++] || [])};}};
+}
+test("parent folder drop reads all batches and both nested folders with relative upload paths",async()=>{
+ const {element,uploads,ui}=await harness({bulk:true});
+ const many=Array.from({length:101},(_,i)=>fileEntry(`/img/imgfolder1/${i}.png`));
+ const one=directoryEntry('/img/imgfolder1',[many.slice(0,100),many.slice(100),[]]);
+ const two=directoryEntry('/img/imgfolder2',[[fileEntry('/img/imgfolder2/new.json')],[]]);
+ const root=directoryEntry('/img',[[one,two],[]]);
+ await element('dropzone').ondrop(syntheticDrop({types:['Files'],items:[{kind:'file',webkitGetAsEntry:()=>root}],files:[]}));
+ assert.match(element('selection-label').textContent,/102/);
+ assert.equal(uploads.length,0);
+ await ui.ingest(true);
+ assert.equal(uploads.length,102);
+ const names=uploads.map(u=>new URLSearchParams(u.url.split('?')[1]).get('name'));
+ assert.ok(names.includes('img/imgfolder1/100.png'));assert.ok(names.includes('img/imgfolder2/new.json'));
+ assert.ok(names.every(n=>!n.startsWith('/')&&!n.includes('..')));
+});
+test("folder picker keeps nested sibling paths for every selected file",async()=>{
+ const {element,ui,uploads}=await harness({bulk:true});
+ element('folder').onchange({target:{files:[{...syntheticFile('a.png'),webkitRelativePath:'img/imgfolder1/a.png'},{...syntheticFile('b.json'),webkitRelativePath:'img/imgfolder2/b.json'}]}});
+ await ui.ingest(true);
+ assert.deepEqual(uploads.map(u=>new URLSearchParams(u.url.split('?')[1]).get('name')),['img/imgfolder1/a.png','img/imgfolder2/b.json']);
+});
+for(const issue of ['cycle','outside','dot-name','link','reader-failure']) {
+ test(`unsafe directory drop ${issue} fails without replacing selection or uploading`,async()=>{
+  const {element,ui,uploads}=await harness({bulk:true});ui.selectFiles([syntheticFile('keep.json')]);
+  let child;
+  if(issue==='outside')child=fileEntry('/outside/private.png');
+  else if(issue==='dot-name')child={...fileEntry('/img/../private.png'),name:'../private.png'};
+  else if(issue==='link')child={...fileEntry('/img/link.png'),isSymbolicLink:true};
+  else child=fileEntry('/img/a.png');
+  const root=directoryEntry('/img',[[child],[]]);
+  if(issue==='cycle')root.createReader=()=>({readEntries:ok=>ok([root])});
+  if(issue==='reader-failure')root.createReader=()=>({readEntries:(ok,fail)=>fail(Error('synthetic permission error'))});
+  await element('dropzone').ondrop(syntheticDrop({types:['Files'],items:[{kind:'file',webkitGetAsEntry:()=>root}],files:[]}));
+  assert.match(element('file-list').textContent,/keep.json/);assert.equal(uploads.length,0);
+  assert.match(element('message').textContent,/安全に読み取れません/);assert.equal(element('files').disabled,false);
+ });
+}
+test("folder scan cancellation ends even while browser reader callback is pending",async()=>{
+ const {element,ui}=await harness({bulk:true});ui.selectFiles([syntheticFile('keep.json')]);
+ let callback;
+ const root=directoryEntry('/img',[]);root.createReader=()=>({readEntries:ok=>{callback=ok;}});
+ const pending=element('dropzone').ondrop(syntheticDrop({types:['Files'],items:[{kind:'file',webkitGetAsEntry:()=>root}],files:[]}));
+ assert.equal(element('cancel').disabled,false);
+ element('cancel').onclick();await pending;
+ callback([fileEntry('/img/late.png')]);await new Promise(setImmediate);
+ assert.match(element('file-list').textContent,/keep.json/);assert.match(element('message').textContent,/中止/);
+ assert.equal(element('files').disabled,false);
+});

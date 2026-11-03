@@ -267,3 +267,23 @@ junction and atomic replace. No security settings or existing environments were 
 
 Use `git diff --cached` for the complete initial implementation once staged. There is no prior
 codebase or commit history in this newly initialized local repository.
+# Drag/drop and recursive folder follow-up
+
+Isolated source validation: 161 Python tests passed, 1 skipped; 23 Node UI tests
+passed; Ruff and JS syntax checks passed. Synthetic tests cover page-wide file
+drops, file-item fallback, unsupported/URL-only drops, busy feedback, 102 entries
+across directory-reader batches, sibling subfolders, relative upload names,
+cycle/outside/dot/link/error rejection and cancellation during a pending reader.
+
+In a separate loopback IAB browser fixture, the old JS ignored a file dropped
+outside the dashed area (no default prevention, no selection). The revised JS
+prevented navigation and selected it. A real folder chooser selected both files
+under synthetic img/imgfolder1 and img/imgfolder2; metadata-only check parsed 2.
+The same chooser omitted synthetic Windows junctions to an outside sibling and
+to the folder itself. DOM-dispatched directory-entry drops selected both nested
+files and rejected an outside entry while keeping the prior selection.
+
+This is not an Explorer-to-browser native drag test. Other OS/browser link
+semantics and real images/GPU were not tested. Existing running user apps/ports
+were not restarted or stopped; implementation was completed in an isolated source
+copy after the instruction to preserve the running app.
