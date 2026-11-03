@@ -38,8 +38,8 @@ def test_setup_repeated_preserves_data_and_uses_locked_deps(tmp_path):
             return_value=subprocess.CompletedProcess([], 0, "uv 0.11.7 (test)"),
         ),
     ):
-        assert setup_helper.setup(root) == 0
-        assert setup_helper.setup(root) == 0
+        assert setup_helper.setup(root, model_revision=None) == 0
+        assert setup_helper.setup(root, model_revision=None) == 0
     assert sum("venv" in command for command in commands) == 1
     assert all("--frozen" in command and "--inexact" in command for command in commands[1:])
     assert all("setup-model" not in command for command in commands)
@@ -73,6 +73,12 @@ def test_setup_bootstrap_and_model_are_explicit(tmp_path):
     assert commands[3][-3:] == ["setup-model", "--revision", "a" * 40]
 
 
+def test_default_setup_includes_pinned_model():
+    with patch.object(setup_helper, "setup", return_value=0) as setup:
+        assert setup_helper.main([]) == 0
+    assert setup.call_args.args[2] == setup_helper.DEFAULT_REVISION
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows batch")
 def test_setup_batch_no_python(tmp_path):
     root = tmp_path / "日本語 setup space"
@@ -89,6 +95,9 @@ def test_setup_batch_no_python(tmp_path):
     )
     assert result.returncode == 2
     shutil.copyfile(ROOT / "setup_windows.py", root / "setup_windows.py")
+    shutil.copytree(
+        ROOT / "prompt_ledger", root / "prompt_ledger", ignore=shutil.ignore_patterns("__pycache__")
+    )
     venv.EnvBuilder(with_pip=False).create(root / ".venv")
     result = subprocess.run(
         [os.environ["COMSPEC"], "/d", "/c", str(root / "setup.bat"), "--check"],

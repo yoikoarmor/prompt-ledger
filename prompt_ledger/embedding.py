@@ -119,39 +119,6 @@ class QwenEmbedder:
 
 
 def setup_model(cfg, revision):
-    if not re.fullmatch(r"[0-9a-f]{40}", revision or ""):
-        raise LedgerError("revision", "Supply the official model's immutable 40-character commit SHA.")
-    directory = cfg.path("model_dir")
-    if directory.exists() and any(directory.iterdir()):
-        raise LedgerError(
-            "model_exists", "Model directory is not empty. Use a new project root for another model."
-        )
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        raise LedgerError("model_dependency", "Install the model extra first.") from None
-    directory.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        MODEL_ID,
-        revision=revision,
-        local_dir=directory,
-        allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja", "LICENSE*", "NOTICE*"],
-        token=False,
-    )
-    hashes = {}
-    for path in sorted(directory.rglob("*")):
-        if path.is_file() and ".cache" not in path.relative_to(directory).parts:
-            rel = path.relative_to(directory).as_posix()
-            contained(directory, rel)
-            digest = hashlib.sha256()
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            hashes[rel] = digest.hexdigest()
-    if not any(name.endswith(".safetensors") for name in hashes):
-        raise LedgerError("model_missing", "The snapshot contains no safetensors weights.")
-    contained(directory, "manifest.json").write_text(
-        json.dumps({"model_id": MODEL_ID, "revision": revision, "sha256": hashes}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return {"model_id": MODEL_ID, "revision": revision, "files": len(hashes)}
+    from .model_setup import acquire
+
+    return acquire(cfg, revision)

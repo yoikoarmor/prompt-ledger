@@ -85,6 +85,21 @@ trust boundary; do not make data/model/input directories writable to untrusted u
 
 ## Deliberately deferred
 
+Windows setup downloads the pinned official Qwen snapshot by default. Acquisition
+is separate from inference: official file sizes and LFS SHA-256/Git blob hashes
+are recorded in a relative-path resume plan, verified files are reused, and a
+completed SHA-256 manifest is atomically published. An exclusive setup lock
+prevents concurrent download writers. Unknown files and other revisions fail
+closed; TLS failures never enable an insecure fallback. Setup does not load models.
+Each setup invocation must fetch fresh metadata for the exact official revision.
+Local manifest hashes and resume plans are not authenticity authorities. Empty or
+malformed resume inventories fail closed before any successful manifest is written.
+Existing model-cache entries are inspected with lstat before any setup write and
+again before each Hub download. The traversal rejects symbolic links and Windows
+reparse points before descending, including nested metadata/lock/partial entries.
+It never repairs, deletes or follows an unsafe cache link. Concurrent adversarial
+filesystem replacement after these checks remains outside the local trust boundary.
+
 No image similarity, generation, automatic folder watch, hidden history ingestion,
 ANN search, model-space migration, joint embedding mode, archive importer, or cloud
 hosting. No automatic threshold tuning. Qwen semantic quality must be evaluated

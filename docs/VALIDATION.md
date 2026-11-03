@@ -33,6 +33,47 @@ no further model network attempts or security changes were made.
 
 ## Completed
 
+Cache-junction review repair: no-follow lstat traversal now rejects existing links
+and reparse points throughout the model cache, before setup writes and before each
+download call. New isolated fixtures verify cache-root, huggingface, nested download,
+metadata, lock and partial junctions leave their synthetic outside target unchanged.
+The independent review confirmed the previous interrupted fixture did not leave a
+junction/process running and removed its own new repro junction without touching
+the target. This repair does not change authentication, TLS or repository visibility.
+Final regression: 106 passed, 1 skipped (Windows file-symlink privilege unavailable),
+3 UI tests passed; all six actual junction cases executed and passed. Ruff passed.
+
+Independent-review follow-up: setup no longer trusts a local manifest or resume
+hashes as evidence of official provenance. Every invocation requires fresh exact-
+revision official metadata. Empty/malformed inventories fail without publishing
+a success manifest. Regression checks: 99 passed, 1 deselected (the interrupted
+Windows junction check was not repeated without its original outcome record),
+3 UI privacy tests passed, Ruff passed. Related review-process lookup found no
+running Python/cmd process; the saved independent-review repro contains four
+completed non-junction cases and no junction outcome. Commit/push remains held
+for independent review. No network, authentication or visibility changes were made
+during this repair; these new regression cases use synthetic provider metadata.
+
+2026-11-03 complete-setup follow-up: default setup now includes the pinned official
+Qwen model. Real acquisition succeeded with TLS validation unchanged: 10 files,
+1,207,470,234 bytes, revision 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3.
+Official LFS SHA-256/Git blob hashes matched; a second invocation verified all
+local SHA-256 hashes and skipped downloads. Earlier TLS failure is historical.
+Synthetic regressions: 91 Python tests and 3 UI tests passed, including partial
+resume, corrupted-file repair, unknown-file preservation, disk space, lock and
+TLS-failure behavior. Real prompt/image data was not inspected.
+Actual Qwen smoke also passed using three short synthetic strings, CPU float32,
+2 threads, batch 1 and offline settings. All vectors were finite, dimension 1024,
+L2 norm 1; changed-negative cosine was 0.5168548052 and that pair was accepted.
+Exact reimport reused the row without encoding. Total elapsed 26.32 seconds,
+first load/encode 25.96 seconds, peak working set 3.68 GiB, minimum available
+RAM 14.47 GiB. This is not a real-data semantic-quality or long-context benchmark.
+The actual default setup entry also completed successfully: pinned uv 0.11.7
+was fetched from official PyPI (25.4 MB wheel), 45 installed model dependencies
+were checked against the lock, then existing model hashes passed and download
+was skipped. Dependency transfer size on a new machine depends on its platform
+and cache; no fixed total dependency download size is claimed.
+
 - Windows, Python 3.10.11, dedicated project `.venv`.
 - `pytest -q`: **62 passed**, no skips, 1 upstream Starlette/httpx deprecation warning
   (the warning recommends a future test transport change; current tests pass).

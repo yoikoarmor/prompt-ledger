@@ -1,10 +1,12 @@
-"""Explicit local Windows dependency setup; model download is a separate opt-in."""
+"""Explicit Windows setup includes the official pinned model by default."""
 
 import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from prompt_ledger.model_setup import DEFAULT_REVISION
 
 UV_VERSION = "0.11.7"
 
@@ -13,7 +15,7 @@ def run(command, root, env=None):
     subprocess.run(command, cwd=root, env=env, check=True)
 
 
-def setup(root, check=False, model_revision=None):
+def setup(root, check=False, model_revision=DEFAULT_REVISION):
     if not (3, 10) <= sys.version_info[:2] < (3, 14):
         print("[エラー] Python 3.10～3.13が必要です。既存環境は削除しません。")
         return 2
@@ -81,6 +83,8 @@ def setup(root, check=False, model_revision=None):
         run(
             [
                 str(python),
+                "-X",
+                "utf8",
                 "-m",
                 "prompt_ledger.cli",
                 "--root",
@@ -91,15 +95,18 @@ def setup(root, check=False, model_revision=None):
             ],
             root,
         )
-    print("準備完了。start.bat を実行してください。モデルの実推論は未検証です。")
+    print("準備完了。start.bat を実行してください。このセットアップでは推論は実行していません。")
     return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Prompt Ledger Windows setup")
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--model-revision", help="明示的に公式Qwen重みも取得する40桁commit SHA")
+    parser.add_argument("--model-revision", default=DEFAULT_REVISION, help="公式Qwenの40桁commit SHA")
+    parser.add_argument("--skip-model", action="store_true", help="明示的に基本依存のみ導入")
     args = parser.parse_args(argv)
+    if args.skip_model:
+        args.model_revision = None
     if args.model_revision:
         import re
 
